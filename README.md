@@ -31,6 +31,12 @@ cd Python-Telegram-Broadcast-Bot
 pip3 install -r requirements.txt
 ```
 ```
+mv ./config/config-example.yml ./config/config.yml
+nano ./config/config.yml
+# fill up TELEGRAM_TOKEN will your own token
+```
+
+```
 python3 ./bot/bot.py
 ```
 
