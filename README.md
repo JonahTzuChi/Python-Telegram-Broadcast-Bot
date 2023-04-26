@@ -6,6 +6,7 @@ which is related to broadcast.
 
 ## Prerequisite
 1. Get a Bot Token from BotFather, may refer to [site](https://help.zoho.com/portal/en/kb/desk/support-channels/instant-messaging/telegram/articles/telegram-integration-with-zoho-desk#Telegram_Integration)
+1. Install Python if your computer don't have `Python` installed
 
 ## Reference
 Any user of this repo should always refer to [official-site](https://docs.python-telegram-bot.org/en/stable/#telegram-api-support) for the most accurate information. At the point of writing, I refer to [v20.1](https://docs.python-telegram-bot.org/en/v20.1/). 
