@@ -12,4 +12,5 @@ with open(config_dir / "config.yml", 'r') as f:
 config_env = dotenv.dotenv_values(config_dir / "config.env")
 
 # config parameters
-telegram_token = config_yaml["telegram_token"]
+telegram_token = config_yaml["TELEGRAM_TOKEN"]
+target_id = config_yaml["TARGET_ID"]
