@@ -5,7 +5,7 @@ import config
 import telegram_utils as tu
 
 TOKEN = config.telegram_token
-CDN = "https://jonahtzuchi.github.io/Python-Telegram-Broadcast-Bot"
+CDN = "https://jonahtzuchi.github.io/Python-Telegram-Broadcast-Bot" # may use your own CDN
 
 # Most we can't test all of the test-case at once due to request frequency set by Telegram
 # Uncomment code you would like to test

@@ -47,3 +47,4 @@ Go to ./bot/bot.py and uncomment section you would like to run.
 # Remarks
 1. timeout exception, just run the code again
 2. `asyncio` is very important, async/await related code won't run without `asyncio.run(main())`
+3. struggle to access file via URL, especially file stored at cloud drive `Google Drive` and `One Drive`, resolve with github page
