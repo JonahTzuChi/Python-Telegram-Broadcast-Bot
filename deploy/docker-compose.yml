@@ -32,7 +32,7 @@ services:
             - mongo
         volumes:
             - "./production/error:/error:rw"
-            - /var/www/${domain}/html/event2024:/online:rw
+            - /var/www/${domain}/html/${project_name}:/online:rw
             - "./master/config:/code/config"
         env_file:
             - .env
@@ -50,7 +50,7 @@ services:
         volumes:
             - "./production/data:/data:rw"
             - "./production/error:/error:rw"
-            - /var/www/${domain}/html/event2024:/online:rw
+            - /var/www/${domain}/html/${project_name}:/online:rw
             - "./worker_1/config:/code/config"
         depends_on:
             - mongo
