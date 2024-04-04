@@ -1,0 +1,35 @@
+TELEGRAM_TOKEN: "BOT_TOKEN_HERE"
+
+# CONVERSATION
+# Use variable username in your sentence to have individual username in Bot reply
+# Use \n if a newline is desired
+# Wrap the word with <strong></strong> if bold text is desired
+# Single and double quote: \" \'
+# Please keep each sentence short and sweet as longer text tends
+
+# Bot greet user with this when the user first enter the Bot
+GREETING_1_MSG: "您好，我是分享賬號管理員\nHello, I am the account administrator."
+
+# Bot reply user with this after user successfully subscribed to our Bot
+GREETING_2_MSG: "感恩您 <strong>username</strong> \nThank you <strong>username</strong>\nfor participating\n"
+
+# A sentence to guide the user to enter their name within our predefined format
+SUBSCRIBE_MSG: "請輸入中文名（五個字之內)；或英文名字（二十個字母之內）感恩！\nPlease enter your Chinese name (not more than five characters); or English name (not more than twenty alphabets). Thank you!\n"
+
+# Bot reply user with this after user had successfully unsubscribe from our Bot
+UNSUBSCRIBE_MSG: "您已成功取消訂閱。(輸入 /subscribe 恢復訂閱)\nYou have successfully unsubscribed from our bot. (/subscribe to resubscribe)\n"
+
+# Bot reply user with this when user attempt to interact with Bot
+SORRY_NOREPLY: "深感歉意，我只是一個手機自動程序，目前未有答覆能力。\nSorry, I am just a mobile phone automatic program and currently do not have the ability to reply.\n"
+
+# Bot reply user with this when more than one language was detected in username
+SORRY_SINGLE_LANG_ONLY: "系統只能接收中文名字或英文名字而已；\n請避免同時輸入兩種語言名字，\n引起不便，還望多多善解！\nThe system can only accept Chinese or English names; Please avoid entering names in both languages   at the same time, We apologize for any inconvenience caused!"
+
+# Base URL of your server
+# Bot treat this as it's file server
+MY_SERVER: "YOUR_DOMAIN_HERE_WITH_HTTPS"
+
+# A parameter to prevent this bot from hitting the outflow limit
+SLEEP_SECONDS: 0.2
+
+MAGIC_POSTFIX: "random=238&&luck=83264"
