@@ -1,0 +1,71 @@
+version: "3.8"
+
+volumes:
+    mongo-data:
+
+
+services:
+    mongo:
+        container_name: mongodb_dev
+        image: mongo:7.0.5-rc0-jammy
+        restart: always
+        expose:
+            - "27017"
+        # ports:
+        #   - "27017:27017"
+        volumes:
+            #- mongo-data:/var/lib/mongo/data
+            # - "./production/mongo:/data:rw"
+            - ./mongo/mongod.conf:/etc/mongod.conf
+            - ./production/mongo:/data/db
+        command: mongod
+        # entrypoint: ["mongod", "--auth", "--config", "/etc/mongod.conf"]
+        # entrypoint: ["mongod", "--config", "/etc/mongod.conf"]
+        deploy:
+            resources:
+                limits:
+                    cpus: "2"
+                    memory: 2048M
+                reservations:
+                    cpus: "1"
+                    memory: 512M
+    
+    master_app:
+        container_name: master_app_dev
+        build: ./master
+        restart: always
+        command: python3 bot/bot.py
+        depends_on:
+            - mongo
+        volumes:
+            - "./production/error:/error:rw"
+            - /var/www/${domain}/html/event2024:/online:rw
+#           - "./master/config:/code/config"  # Define in Dockerfile
+        env_file:
+            - .env
+        deploy:
+            resources:
+                limits:
+                    cpus: "2"
+                    memory: 2048M
+
+    worker_1:
+        container_name: worker_1_dev
+        build: ./worker_1
+        restart: always
+        command: python3 bot/bot.py
+        deploy:
+             resources:
+                 limits:
+                     cpus: "2"
+                     memory: 4096M
+        volumes:
+            - "./production/data:/data:rw"
+            - "./production/error:/error:rw"
+            - /var/www/${domain}/html/event2024:/online:rw
+#           - "./worker_1/config:/code/config"  # Define in Dockerfile
+        depends_on:
+            - mongo
+            - master_app
+        env_file:
+            - .env

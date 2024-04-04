@@ -1,0 +1,60 @@
+version: "3.8"
+
+volumes:
+    mongo-data:
+
+
+services:
+    mongo:
+        container_name: mongodb_production
+        image: mongo:7.0.5-rc0-jammy
+        restart: always
+        expose:
+            - "27017"
+        volumes:
+            - ./mongo/mongod.conf:/etc/mongod.conf
+            - ./production/mongo:/data/db
+        command: mongod
+        deploy:
+            resources:
+                limits:
+                    cpus: "2"
+                    memory: 2048M
+                reservations:
+                    cpus: "1"
+                    memory: 512M
+
+    master_app:
+        container_name: event2024_master_production
+        image: ${docker_registry}/${docker_repo}:${master_tagname}
+        restart: always
+        command: python3 bot/bot.py
+        depends_on:
+            - mongo
+        volumes:
+            - "./production/error:/error:rw"
+            - /var/www/${domain}/html/event2024:/online:rw
+            - "./master/config:/code/config"
+        env_file:
+            - .env
+        deploy:
+            resources:
+                limits:
+                    cpus: "2"
+                    memory: 2048M
+
+    worker_1:
+        container_name: event2024_worker_1_production
+        image: ${docker_registry}/${docker_repo}:${worker_tagname}
+        restart: always
+        command: python3 bot/bot.py
+        volumes:
+            - "./production/data:/data:rw"
+            - "./production/error:/error:rw"
+            - /var/www/${domain}/html/event2024:/online:rw
+            - "./worker_1/config:/code/config"
+        depends_on:
+            - mongo
+            - master_app
+        env_file:
+            - .env
