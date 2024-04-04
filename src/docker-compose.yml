@@ -1,12 +1,9 @@
 version: "3.8"
 
-volumes:
-    mongo-data:
-
 
 services:
     mongo:
-        container_name: mongodb_dev
+        container_name: mongodb_${project_name}_${mode}
         image: mongo:7.0.5-rc0-jammy
         restart: always
         expose:
@@ -21,6 +18,8 @@ services:
         command: mongod
         # entrypoint: ["mongod", "--auth", "--config", "/etc/mongod.conf"]
         # entrypoint: ["mongod", "--config", "/etc/mongod.conf"]
+        env_file:
+            - .env
         deploy:
             resources:
                 limits:
@@ -30,8 +29,8 @@ services:
                     cpus: "1"
                     memory: 512M
     
-    master_app:
-        container_name: master_app_dev
+    master_bot:
+        container_name: master_${project_name}_${mode}
         build: ./master
         restart: always
         command: python3 bot/bot.py
@@ -49,8 +48,8 @@ services:
                     cpus: "2"
                     memory: 2048M
 
-    worker_1:
-        container_name: worker_1_dev
+    worker_bot:
+        container_name: worker_${project_name}_${mode}
         build: ./worker_1
         restart: always
         command: python3 bot/bot.py

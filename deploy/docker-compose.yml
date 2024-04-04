@@ -1,12 +1,9 @@
 version: "3.8"
 
-volumes:
-    mongo-data:
-
 
 services:
     mongo:
-        container_name: mongodb_production
+        container_name: mongodb_${project_name}_${mode}
         image: mongo:7.0.5-rc0-jammy
         restart: always
         expose:
@@ -15,6 +12,8 @@ services:
             - ./mongo/mongod.conf:/etc/mongod.conf
             - ./production/mongo:/data/db
         command: mongod
+        env_file:
+            - .env
         deploy:
             resources:
                 limits:
@@ -24,8 +23,8 @@ services:
                     cpus: "1"
                     memory: 512M
 
-    master_app:
-        container_name: event2024_master_production
+    master_bot:
+        container_name: master_${project_name}_${mode}
         image: ${docker_registry}/${docker_repo}:${master_tagname}
         restart: always
         command: python3 bot/bot.py
@@ -43,8 +42,8 @@ services:
                     cpus: "2"
                     memory: 2048M
 
-    worker_1:
-        container_name: event2024_worker_1_production
+    worker_bot:
+        container_name: worker_${project_name}_${mode}
         image: ${docker_registry}/${docker_repo}:${worker_tagname}
         restart: always
         command: python3 bot/bot.py
