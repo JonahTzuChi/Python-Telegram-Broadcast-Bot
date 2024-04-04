@@ -22,6 +22,9 @@ UNSUBSCRIBE_MSG: "您已成功取消訂閱。(輸入 /subscribe 恢復訂閱)\nY
 # Bot reply user with this when user attempt to interact with Bot
 SORRY_NOREPLY: "深感歉意，我只是一個手機自動程序，目前未有答覆能力。\nSorry, I am just a mobile phone automatic program and currently do not have the ability to reply.\n"
 
+# Bot reply user with this when more than one language was detected in username
+SORRY_SINGLE_LANG_ONLY: "系統只能接收中文名字或英文名字而已；\n請避免同時輸入兩種語言名字，\n引起不便，還望多多善解！\nThe system can only accept Chinese or English names; Please avoid entering names in both languages   at the same time, We apologize for any inconvenience caused!"
+
 # Base URL of your server
 # Bot treat this as it's file server
 MY_SERVER: "YOUR_DOMAIN_HERE_WITH_HTTPS"
