@@ -54,6 +54,6 @@ services:
             - "./worker_1/config:/code/config"
         depends_on:
             - mongo
-            - master_app
+            - master_bot
         env_file:
             - .env
