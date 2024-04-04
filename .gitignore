@@ -159,7 +159,28 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-config/config.env
-config/config.yml
+src/config/config.env
+src/config/config.yml
+
+src/*/config/config.env
+src/*/config/config.yml
+
+src/production/data/*
+src/production/error/*
+src/production/mongo/*
 
 .vscode/*
+
+*.jpg
+*.jpeg
+*.png
+
+deploy/config/config.env
+deploy/config/config.yml
+
+deploy/*/config/config.env
+deploy/*/config/config.yml
+
+deploy/production/data/*
+deploy/production/error/*
+deploy/production/mongo/*
