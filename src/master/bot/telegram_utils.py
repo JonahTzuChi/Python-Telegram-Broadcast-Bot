@@ -18,7 +18,7 @@ from const import *
 from library.validation import check_and_update_quota
 from service import ServiceFactory
 
-sf = ServiceFactory(cfg.mongodb_uri, cfg.mongodb_database)
+sf = ServiceFactory(cfg.mongodb_uri, database_name=cfg.mongodb_database)
 
 subscriber_service: service.subscriber_service.SubscriberService = sf.get_service("subscriber")
 
