@@ -692,6 +692,7 @@ async def upload_subscriber(update: Update, context: CallbackContext):
                 if len(line) == 0:  # EOF
                     break
                 line = line.replace("'", "\"")
+                line = line.replace('None', '"None"')
                 sub_json: dict = json.loads(line)
                 telegram_id: int | None = sub_json.get("telegram_id")
                 if telegram_id is None:
