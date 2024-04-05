@@ -146,7 +146,8 @@ async def message_handler(update: Update, context: CallbackContext) -> None:
         return None
 
     if mode == MODE_SUBSCRIBE:
-        await subscribe(subscriber.id, message)
+        named_greeting = await subscribe(subscriber.id, message)
+        await update.message.reply_text(named_greeting, parse_mode=ParseMode.HTML)
     elif mode == MODE_FEEDBACK:
         await feedback(update)
         await help_handler(update, context)
