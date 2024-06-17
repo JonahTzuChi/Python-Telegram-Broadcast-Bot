@@ -32,10 +32,8 @@ services:
             - mongo
         volumes:
             - "./production/error:/error:rw"
-            - /var/www/${domain}/html/${project_name}:/online:rw
-            - "./master/config:/code/config"
-        env_file:
-            - .env
+            - "./production/data/master:/online:rw"
+            - "./shared_config:/code/shared_config"
         deploy:
             resources:
                 limits:
@@ -50,10 +48,9 @@ services:
         volumes:
             - "./production/data:/data:rw"
             - "./production/error:/error:rw"
-            - /var/www/${domain}/html/${project_name}:/online:rw
+            - "./production/data/worker:/online:rw"
+            - "./shared_config:/code/shared_config"
             - "./worker_1/config:/code/config"
         depends_on:
             - mongo
             - master_bot
-        env_file:
-            - .env

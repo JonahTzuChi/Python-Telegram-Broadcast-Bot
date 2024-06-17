@@ -1,0 +1,23 @@
+# Description: This file contains the general configuration for the bot.
+
+# Bot
+SLEEP_SECONDS: 0.2    # Add a pause after a file is being sent to the subscriber
+MAX_RETRY: 5          # Number of retries before giving up
+USE_MULTI_PROCESS: 1  # Whether to use multiprocessing to speed up the process, if yes, set to 1, otherwise 0
+USE_NPROC: 4          # Number of processes to use, if USE_MULTI_PROCESS is set to 1, default is 4
+BROADCAST_TYPES: [ "TEXT", "PHOTO", "DOCUMENT", "VIDEO" ] # Type of content this bot are capable of broadcasting
+# Postcard is a special kind of content where the bot first render username to the image before sending it to the subscriber.
+#UPLOAD_TYPES: [ "Photo", "Video", "Document", "Blessing" ] # Type of content can be uploaded to the bot.
+# Blessing is of type photo, but it will be stored under /online/blessing
+# Other types will be stored under /online
+UPLOAD_PROMPT_MESSAGE:
+  "Photo": "Ready to accept <strong>Photo</strong> upload. Please provide photo name with extension as caption."
+  "Video": "Ready to accept <strong>Video</strong> upload. Please provide video name with extension as caption."
+  "Document": "Ready to accept <strong>Document</strong> upload. Please provide document name with extension as caption."
+# MAGIC_POSTFIX is a parameter added to the end of the URL
+# to prevent Exception (Bad Request: wrong file identifier/HTTP URL specified)
+# MAGIC_POSTFIX: "john=316&joshua=2415"
+MAGIC_POSTFIX: "where=999"
+
+# DB
+DB_FIND_LIMIT: 100    # Number of records to retrieve from the database in one go
