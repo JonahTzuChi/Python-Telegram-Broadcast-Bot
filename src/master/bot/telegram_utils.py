@@ -321,9 +321,9 @@ async def get_follow_information_handler(update: Update, context: CallbackContex
 
     await subscriber_service.tick_usage(subscriber.id, "follow_us")
     follow_us_msg = [
-        "1. [Facebook 慈濟馬來西亞分會 Tzu-Chi Merits Society Malaysia](https://www.facebook.com/tcmsia/)",
-        "2. [Official Site 佛教慈濟基金會馬來西亞分會 Buddhist Tzu-Chi Merits Society Malaysia](https://www.tzuchi.org.my/)",
-        "3. [Jing-Si Books & Cafe 靜思書軒](https://www.jingsibooksncafe.com)"
+        "1. [Python Package Index (PyPI)](https://pypi.org/user/jonah_whaler_2348/)",
+        "2. [GitHub](https://github.com/JonahTzuChi)",
+        "3. [GitLab](https://gitlab.com/JonahYeoh)"
     ]
     for msg in follow_us_msg:
         await message.reply_text(
