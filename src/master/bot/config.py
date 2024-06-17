@@ -18,6 +18,7 @@ magic_postfix = general_config_yaml["MAGIC_POSTFIX"]
 with open(shared_config_dir / "access.production.yml", 'r') as f:
     acl_config_yaml = yaml.safe_load(f)
 token: str = acl_config_yaml["MASTER_TOKEN"]
+dummy_id: int = acl_config_yaml["DUMMY_ID"]
 
 # Load environmental variables
 shared_config_env = dotenv.dotenv_values(shared_config_dir / "config.production.env")
