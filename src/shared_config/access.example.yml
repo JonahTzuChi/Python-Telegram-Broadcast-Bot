@@ -1,5 +1,5 @@
-MASTER_TOKEN=""
-WORKER_TOKEN=""
+MASTER_TOKEN: ""
+WORKER_TOKEN: ""
 
 # Description: This file define the access control for the bot to interact with the worker.
 SYSADMIN_TID: []  # User ID of the sysadmin
