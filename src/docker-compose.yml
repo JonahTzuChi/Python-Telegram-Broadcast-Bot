@@ -31,7 +31,7 @@ services:
             - mongo
         volumes:
             - "./production/error:/error:rw"
-            - /var/www/${domain}/html/${project_name}:/online:rw
+            - "./production/data/master:/online:rw"
             - "./shared_config:/code/shared_config"
 #           - "./master/config:/code/config"  # Define in Dockerfile
         deploy:
@@ -53,7 +53,7 @@ services:
         volumes:
             - "./production/data:/data:rw"
             - "./production/error:/error:rw"
-            - /var/www/${domain}/html/${project_name}:/online:rw
+            - "./production/data/worker:/online:rw"
             - "./shared_config:/code/shared_config"
 #           - "./worker_1/config:/code/config"  # Define in Dockerfile
         depends_on:
