@@ -1,18 +1,21 @@
+from PIL import Image
+
+
 def is_valid_folderName(folder_name: str) -> bool:
     if len(folder_name) == 0 or len(folder_name) > 32:
         return False
 
-    INVALID_CHARACTERS = '<>:"/\\|?*.'
-    invalid_characters = list(filter(lambda char: char in INVALID_CHARACTERS, folder_name))
+    invalid_characters = '<>:"/\\|?*.'
+    invalid_characters = list(filter(lambda char: char in invalid_characters, folder_name))
     return len(invalid_characters) == 0
 
 
 def is_valid_fileName(file_name: str) -> bool:
-    if len(file_name) == 0 or len(file_name) > 32:
+    if len(file_name) == 0 or len(file_name) > 120:
         return False
 
-    INVALID_CHARACTERS = '<>:"/\\|?*'
-    invalid_characters = list(filter(lambda char: char in INVALID_CHARACTERS, file_name))
+    invalid_characters = '<>:"/\\|?*'
+    invalid_characters = list(filter(lambda char: char in invalid_characters, file_name))
     return len(invalid_characters) == 0
 
 
@@ -57,16 +60,23 @@ def addPhoto_validation_fn(filename, photo):
     return 0, "None"
 
 
-def addPostcard_validation_fn(filename, photo):
-    if filename is None:
-        return 1, "Please try again. Filename is missing."
-    if not is_valid_folderName(filename):
-        return 2, "Please try again. Filename is missing."
-    if photo is None:
-        return 3, "Please try again. Only accept photo."
-    if photo.height != 1080 or photo.width != 1920:
-        return 4, "Please try again. Only accept 1080x1920 photo."
-    return 0, "None"
+def is_correct_resolution(photo_path: str, expected_shape: tuple) -> bool:
+    """
+    Checks if a photo matches the expected resolution.
+
+    This function opens an image file from the specified path and compares its size (resolution)
+    to the expected dimensions provided as a tuple. It is primarily used to validate if an image
+    meets specific resolution criteria before proceeding with further processing or operations.
+
+    Parameters:
+    - photo_path (str): The file path to the photo that needs to be checked.
+    - expected_shape (tuple): A tuple specifying the expected dimensions (width, height) of the photo.
+
+    Returns:
+    - bool: True if the photo's resolution matches the expected dimensions, False otherwise.
+    """
+    with Image.open(photo_path) as photo:
+        return photo.size == expected_shape
 
 
 def addDocument_validation_fn(filename, document, mimetype: str) -> tuple[int, str]:
@@ -109,3 +119,14 @@ def addText_validation_fn(filename, document, mimetype: str) -> tuple[int, str]:
     if mimetype not in ["text/plain"]:
         return 4, "Only txt file is acceptable."
     return 0, "None"
+
+
+def is_ext_align_w_dtype(file_extension: str, dtype: str) -> bool:
+    if dtype == "DOCUMENT":
+        allowed_extension = ["pdf", "txt", "csv"]
+    elif dtype == "VIDEO":
+        allowed_extension = ["mp4", "mkv"]
+    else:
+        # Photo
+        allowed_extension = ["jpg", "jpeg", "png"]
+    return file_extension in allowed_extension

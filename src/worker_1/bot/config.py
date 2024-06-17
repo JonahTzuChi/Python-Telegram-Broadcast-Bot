@@ -2,36 +2,50 @@ import yaml
 import dotenv
 from pathlib import Path
 
+# Bot Specific Configuration
 config_dir = Path(__file__).parent.parent.resolve() / "config"
 
-# load yaml config
-with open(config_dir / "config.yml", 'r') as f:
-    config_yaml = yaml.safe_load(f)
+with open(config_dir / "config.yml", "r") as f:
+    bot_config_yaml = yaml.safe_load(f)
+# Extracting `bot_config_yaml`
+bot_id = bot_config_yaml["BOT_ID"]
 
-# load .env config
-config_env = dotenv.dotenv_values(config_dir / "config.env")
+shared_config_dir = Path(__file__).parent.parent.resolve() / "shared_config"
+with open(shared_config_dir / "bot_line.production.yml", 'r') as f:
+    bot_line = yaml.safe_load(f)
 
-# config parameters
-master = config_yaml["MASTER_TELEGRAM_TOKEN"]
-bot_id = config_yaml["MY_ID"]
-worker = config_yaml["TELEGRAM_TOKEN"]
+with open(shared_config_dir / "general.production.yml", 'r') as f:
+    general_config_yaml = yaml.safe_load(f)
+# Extracting `general_config_yaml`
+seconds: float = general_config_yaml["SLEEP_SECONDS"]
+max_retry: int = general_config_yaml["MAX_RETRY"]
+use_multi_process: bool = general_config_yaml["USE_MULTI_PROCESS"]
+use_nproc: int = general_config_yaml["USE_NPROC"]
+broadcast_types: list[str] = general_config_yaml["BROADCAST_TYPES"]
+upload_prompt_message: dict[str, str] = general_config_yaml["UPLOAD_PROMPT_MESSAGE"]
 
-sysadmin_tid = config_yaml["SYSADMIN_ID"]
-allowed_tid = config_yaml["ALLOWED_TELEGRAM_ID"]
-allowed_username = config_yaml["ALLOWED_USERNAME"]
+magic_postfix = general_config_yaml["MAGIC_POSTFIX"]
+db_find_limit: int = general_config_yaml["DB_FIND_LIMIT"]
 
-x_api_key = config_yaml["X_API_KEY"]
-weather_api_key = config_yaml["WEATHER_API_KEY"]
-base_server = config_yaml["MY_SERVER"]
+# Load access control list
+with open(shared_config_dir / "worker_access.production.yml", 'r') as f:
+    acl_config_yaml = yaml.safe_load(f)
+token: str = acl_config_yaml["WORKER_TOKEN"]
+master: str = acl_config_yaml["MASTER_TOKEN"]
+sysadmin_tid: list[int] = acl_config_yaml["SYSADMIN_TID"]
+allowed_tid: list[int] = acl_config_yaml["ALLOWED_TELEGRAM_ID"]
+allowed_username: list[str] = acl_config_yaml["ALLOWED_USERNAME"]
+dummy_id: int = acl_config_yaml["DUMMY_ID"]
 
-magic_postfix = config_yaml["MAGIC_POSTFIX"]
+# Load environmental variables
+shared_config_env = dotenv.dotenv_values(shared_config_dir / "config.production.env")
+db_host = shared_config_env["MONGODB_HOST"]
+db_port = shared_config_env["MONGODB_PORT"]
+db_name = shared_config_env["MONGODB_DATABASE"]
+mongodb_uri = f"mongodb://{db_host}:{db_port}"
 
-seconds = config_yaml["SLEEP_SECONDS"]
-use_multiproc = config_yaml["USE_MULTI_PROCESS"] == 1
-use_nproc = config_yaml["USE_NPROC"]
-db_find_limit = config_yaml["DB_FIND_LIMIT"]
+domain: str = shared_config_env["DOMAIN"]
+project_name: str = shared_config_env["PROJECT_NAME"]
+base_url: str = f"https://{domain}"
 
-media_types = config_yaml["MEDIA_TYPES"]
-
-mongodb_uri = f"mongodb://mongo:{config_env['MONGODB_PORT']}"
-mongodb_database = config_env["MONGODB_DATABASE"]
+weather_api_key: str = shared_config_env["WEATHER_API_KEY"]

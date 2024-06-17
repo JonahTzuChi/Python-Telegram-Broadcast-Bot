@@ -1,0 +1,30 @@
+# Description: This file contains a set of predefined responses for the bot to reply to the subscribers.
+
+## Rules:
+### Use variable username in your sentence to have individual username in Bot reply
+### Use \n if a newline is desired
+### Wrap the word with <strong></strong> if bold text is desired
+### Single and double quote: \" \'
+### Please keep each sentence short and sweet as longer text tends
+
+# Bot greet user with this when the user first enter the Bot
+GREETING_1_MSG: "Hello"
+
+# Bot reply user with this after user successfully subscribed to our Bot
+GREETING_2_MSG: "Thank you <strong>username</strong>\nfor subscribing to our service."
+
+# A sentence to guide the user to enter their name within our predefined format
+SUBSCRIBE_MSG: "Please enter your Chinese name (not more than five characters); or English name (not more than twenty alphabets). Thank you!\n"
+
+# Bot reply user with this after user had successfully unsubscribed from our Bot
+UNSUBSCRIBE_MSG: "You have successfully unsubscribed from our bot. (/subscribe to resubscribe)\n"
+
+# Bot reply user with this when more than one language was detected in username
+SORRY_SINGLE_LANG_ONLY: "The system can only accept Chinese or English names; Please avoid entering names in both languages at the same time, We apologize for any inconvenience caused!"
+
+# Bot reply user with this when user attempt to interact with Bot
+SORRY_NOREPLY: "Sorry, I am just a mobile phone automatic program and currently do not have the ability to reply.\n"
+
+# Bot send this to the subscribers when /terminate is triggered
+TERMINATION_MSG: "Bye bye!"
+#######################################################################################################################

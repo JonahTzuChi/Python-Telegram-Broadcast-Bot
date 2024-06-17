@@ -8,18 +8,11 @@ services:
         restart: always
         expose:
             - "27017"
-        # ports:
-        #   - "27017:27017"
         volumes:
-            #- mongo-data:/var/lib/mongo/data
-            # - "./production/mongo:/data:rw"
             - ./mongo/mongod.conf:/etc/mongod.conf
             - ./production/mongo:/data/db
         command: mongod
-        # entrypoint: ["mongod", "--auth", "--config", "/etc/mongod.conf"]
-        # entrypoint: ["mongod", "--config", "/etc/mongod.conf"]
-        env_file:
-            - .env
+        env_file: ".env"
         deploy:
             resources:
                 limits:
@@ -39,9 +32,8 @@ services:
         volumes:
             - "./production/error:/error:rw"
             - /var/www/${domain}/html/${project_name}:/online:rw
+            - "./shared_config:/code/shared_config"
 #           - "./master/config:/code/config"  # Define in Dockerfile
-        env_file:
-            - .env
         deploy:
             resources:
                 limits:
@@ -62,9 +54,8 @@ services:
             - "./production/data:/data:rw"
             - "./production/error:/error:rw"
             - /var/www/${domain}/html/${project_name}:/online:rw
+            - "./shared_config:/code/shared_config"
 #           - "./worker_1/config:/code/config"  # Define in Dockerfile
         depends_on:
             - mongo
             - master_bot
-        env_file:
-            - .env

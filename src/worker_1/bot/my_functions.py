@@ -1,14 +1,101 @@
 # external library
-from queue import Queue
-from typing import Any
-from telegram import Update, Message
+import hashlib as hx
+import charade
+from telegram import Message
 # internal library
+import config
 import service
-# data class
-from data_class.dtype import JobSentInformation
 
 
-def extract_forwarded_sender_info(update: Update) -> str | None:
+class JobTracker:
+    """
+    This class is used to track whether a media file was sent to a subscriber.
+    Fundamentally this is a wrapper around the `SubscriberService` class to specifically track media files.
+    This class is recognized as an asynchronous callback function in broadcast operations.
+
+    Attributes:
+    ------------
+    - __service (service.subscriber_service.SubscriberService): SubscriberService instance
+    - __job_hash (str): Hashcode of the media file to be tracked
+
+    Notes:
+    ------------
+    * Media file is identified by its hashcode.
+    * Two files with identical hashcode will be considered the same file.
+    * Two identical files with different hashcode (due to different file names) will be considered different files.
+    * Call __call__ method to mark the media file as sent.
+
+    Example:
+    ------------
+    >>> job_tracker = JobTracker(subscriber_service, job_hash)
+    >>> await job_tracker(telegram_id)
+
+    >>> job_tracker = JobTracker(subscriber_service, job_hash)
+    >>> sent = job_tracker.is_job_done(subscriber)
+    """
+
+    def __init__(self, ss: service.subscriber_service.SubscriberService, url_or_filename: str):
+        """
+        Initialize a new instance of the JobTracker class.
+
+        Parameters:
+        ------------
+        - ss (service.subscriber_service.SubscriberService): SubscriberService instance
+        - url_or_filename (str): The URL or filename of the media file
+        """
+        self.__service = ss
+        self.__job_hash = JobTracker.construct_job_hash(url_or_filename)
+
+    async def set_job_as_done(self, telegram_id: int):
+        """
+        Mark the media file as sent.
+
+        Parameters:
+        ------------
+        - telegram_id (int): Telegram ID of the subscriber
+
+        Return:
+        ------------
+        None
+        """
+        await self.__service.set_attribute(telegram_id, _key=self.__job_hash, _value=1)
+
+    async def __call__(self, telegram_id: int):
+        await self.set_job_as_done(telegram_id)
+
+    def is_job_done(self, subscriber: dict) -> bool:
+        """
+        Check whether the same media file was sent to this subscriber.
+
+        Parameters:
+        ------------
+        - subscriber (dict): Subscriber information
+
+        Return:
+        ------------
+        - condition (bool): True if the media file was sent to this subscriber, False otherwise
+
+        Notes:
+        ------------
+        - Never attempt to get value directly, KeyError can be very scary!!
+        """
+        if self.__job_hash not in subscriber.keys():
+            return False
+        return subscriber[self.__job_hash] == 1
+
+    @property
+    def job_hash(self) -> str:
+        return self.__job_hash
+
+    @classmethod
+    def construct_job_hash(cls, url_or_filename: str):
+        # Strip away the query string
+        url_or_filename = url_or_filename.split("?")[0]
+        _bytes = url_or_filename.encode()
+        return hx.md5(_bytes).hexdigest()
+
+
+def extract_forwarded_sender_info(message: Message) -> str | None:
     """
     Extracts sender information from a forwarded Telegram message contained within an Update object.
 
@@ -33,7 +120,7 @@ first_name: {firstname}
 last_name: {lastname}
 username: {username}
 """
-    forward_origin = getattr(update.message, "forward_origin", None)
+    forward_origin = getattr(message, "forward_origin", None)
     found = False
     if forward_origin:
         found = True
@@ -52,95 +139,6 @@ username: {username}
     return output_msg if found else None
 
 
-def is_job_done(subscriber: Any, hashcode: str) -> bool:
-    """
-    Check whether the same media file was sent to this subscriber.
-
-    Notes:
-    - media file is identified by its hashcode
-    - two file with identical hashcode will be considered the same file
-    - two identical file with different hashcode (due to different file name) will be considered different file.
-
-    Return:
-    - condition (bool): True if the media file was sent to this subscriber, False otherwise
-
-    @Warning: Never attempt to get value directly, KeyError can be very scary!!
-    """
-    if hashcode not in subscriber.keys():
-        return False
-    return subscriber[hashcode] == 1
-
-
-async def set_job_as_done(
-        ss: service.subscriber_service.SubscriberService, subscriber_id: int, hashcode: str
-) -> None:
-    """
-    Mark the media file as sent.
-
-    Notes:
-    - media file is identified by its hashcode
-    - two file with identical hashcode will be considered the same file
-    - two identical file with different hashcode (due to different file name) will be considered different file.
-    """
-    await ss.set_attribute(subscriber_id, _key=hashcode, _value=1)
-
-
-def write_sent_result(log_sheet_path: str, job_information_list: list[JobSentInformation], content: str) -> None:
-    """
-    Write job sent information to the log sheet.
-
-    Args:
-        log_sheet_path (sheet): path to the log sheet
-        job_information_list (list[JobSentInformation]): failed jobs information
-        content (str): job content expected to be sent
-
-    Return:
-        None
-    """
-    with open(log_sheet_path, "a") as file:
-        file.write(f"Content:{content}\n")
-        for jsi in job_information_list:
-            file.write(f"{jsi.dump()}\n")
-
-
-def create_subscriber(
-        inp: dict
-) -> service.subscriber_service.Subscriber:
-    """
-    Unpack input dictionary to create Subscriber Object.
-
-    Notes:
-        - Only uses standard columns.
-    """
-    subscriber = service.subscriber_service.Subscriber(
-        inp.get("telegram_id"), inp.get("chat_id"),
-        inp.get("username"), inp.get("mode"),
-        inp.get("status"), inp.get("n_feedback"),
-        inp.get("feedback"), inp.get("reg_datetime")
-    )
-    return subscriber
-
-
-async def update_non_standard_columns(
-        ss: service.subscriber_service.SubscriberService,
-        inp: dict
-) -> None:
-    """
-    Update the value to non-standard columns to DB.
-
-    Notes:
-        - Mostly are hash_code of media files
-    """
-    standard_columns: list[str] = [
-        "telegram_id", "chat_id", "username", "mode", "status", "n_feedback", "feedback", "reg_datetime"
-    ]
-    columns = list(filter(lambda column: column not in standard_columns, inp.keys()))
-    for col in columns:
-        await ss.set_attribute(
-            inp.get("telegram_id"), _key=col, _value=inp.get(col)
-        )
-
-
 def patch_extension(filename: str):
     parts = filename.split(".")
     if len(parts) >= 2:
@@ -149,39 +147,6 @@ def patch_extension(filename: str):
             raise Exception("Invalid file extension")
         return filename
     return filename + ".jpg"
-
-
-def group_by_result(
-        result_queue: Queue[JobSentInformation], is_apply_result: bool
-) -> tuple[list[JobSentInformation], list[JobSentInformation]]:
-    sent_list, failed_list = list(), list()
-    while result_queue.qsize():
-        item = result_queue.get()
-        sid, uname, result = item.to_tuple()
-        if is_apply_result:
-            result = result.get()
-        if type(result) is Message:
-            sent_list.append(JobSentInformation(sid, uname, str(result)))
-        else:
-            failed_list.append(JobSentInformation(sid, uname, result))
-
-    return sent_list, failed_list
-
-
-def group_by_result_list(
-        result_list: list[JobSentInformation], is_apply_result: bool
-) -> tuple[list[JobSentInformation], list[JobSentInformation]]:
-    sent_list, failed_list = list(), list()
-    for job_result in result_list:
-        sid, uname, result = job_result.to_tuple()
-        if is_apply_result:
-            result = result.get()
-        if type(result) is Message:
-            sent_list.append(JobSentInformation(sid, uname, str(result)))
-        else:
-            failed_list.append(JobSentInformation(sid, uname, result))
-
-    return sent_list, failed_list
 
 
 def split_text_into_chunks(text, chunk_size):

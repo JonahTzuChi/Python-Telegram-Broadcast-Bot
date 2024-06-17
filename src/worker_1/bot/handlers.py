@@ -1,5 +1,4 @@
 import asyncio
-import hashlib as hx
 import html
 import json
 import logging
@@ -7,9 +6,11 @@ import os
 import re
 import time
 import traceback
+import random
 from datetime import datetime, timezone, timedelta
-from multiprocessing.pool import Pool
-from typing import Callable, Coroutine
+from multiprocessing.pool import Pool, ApplyResult
+from typing import Any, Optional, Tuple
+from queue import Queue
 
 import requests
 import telegram
@@ -18,23 +19,32 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     User as TgUser,
+    Document,
+    Message
 )
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 from telegram.ext import (
     CallbackContext,
 )
 
-import api
 import config
 import library.filesystem as fs
 import library.validation as val
 from const import *
-from my_functions import *
+from library.unnamed import encode as custom_encode_fn
+from my_functions import (
+    JobTracker,
+    extract_forwarded_sender_info,
+    split_text_into_chunks,
+    patch_extension
+)
+import service
 from service import ServiceFactory
-from data_class.dtype import BroadcastStats
 
-sf = ServiceFactory(config.mongodb_uri, config.bot_id, config.mongodb_database)
+import python_telegram_broadcast as ptb
+
+sf = ServiceFactory(config.mongodb_uri, config.bot_id, config.db_name)
 admin_service: service.admin_service.AdminService = sf.get_service("admin")
 subscriber_service: service.subscriber_service.SubscriberService = sf.get_service(
     "subscriber"
@@ -86,6 +96,7 @@ available_commands = [
     ("/video", "Get video list"),
     ("/document", "Get document list"),
     ("/weather", "Get Current Weather"),
+    ("/terminate", "Broadcast Termination Message"),
     ("/reset_file_tracking", "Reset file tracking"),
 ]
 
@@ -101,9 +112,12 @@ async def help_handler(update: Update, context: CallbackContext):
     Returns:
         None
     """
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -111,7 +125,7 @@ async def help_handler(update: Update, context: CallbackContext):
     help_message = ""
     for command in available_commands:
         help_message += f"{command[0]} - {command[1]}\n"
-    await update.message.reply_text(help_message, parse_mode=ParseMode.HTML)
+    await message.reply_text(help_message, parse_mode=ParseMode.HTML)
 
 
 async def post_init(application: telegram.ext.Application) -> None:
@@ -144,10 +158,28 @@ async def middleware_function(update: Update, context: CallbackContext):
 
     Returns:
         None
+
+    Todos:
+    ----------------
+    * Find out steps to replicate the scenario where context.user_data is None
     """
-    admin: TgUser = update.message.from_user
-    logger.info(f"[0] => {admin.id} | {update.message.text}")
-    await register_admin_if_not_exists(admin.id, update.message.chat.id, admin.username)
+    message: Optional[Message] = getattr(update, "message", None)
+    if context.user_data is None:
+        await context.bot.send_message(config.dummy_id, "context.user_data is None")
+        raise TelegramError(f"context.user_data is None. Update={update}\nContext={context}\n")
+
+    context.user_data['is_edit'] = False
+    if message is None:
+        context.user_data['is_edit'] = True
+        message: Optional[Message] = getattr(update, "edited_message", None)
+    admin: TgUser = message.from_user
+    logger.info(f"[0] => {admin.id}, {message.text}, {message}")
+    # msg = await message.reply_text("Processing...")
+    # await asyncio.sleep(1)
+    # await msg.edit_text(f"Elapsed time: 1 second.", parse_mode=ParseMode.HTML)
+    # await asyncio.sleep(1)
+    # await msg.edit_text("Updated!!!", parse_mode=ParseMode.HTML)
+    await register_admin_if_not_exists(admin.id, message.chat.id, admin.username)
 
 
 async def register_admin_if_not_exists(
@@ -183,17 +215,19 @@ async def start_handler(update: Update, context: CallbackContext) -> None:
     - send greeting message
     - send available commands
     """
-    admin_user: TgUser = update.message.from_user
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
     is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot",
             parse_mode=ParseMode.HTML
         )
         return None
 
     greeting: str = f"Hi! {admin_user.username} I'm your broadcast agent\nBelow are the available commands:\n"
-    await update.message.reply_text(greeting, parse_mode=ParseMode.HTML)
+    await message.reply_text(greeting, parse_mode=ParseMode.HTML)
     await help_handler(update, context)
 
 
@@ -211,10 +245,12 @@ async def try_broadcast_handler(update: Update, context: CallbackContext):
     - If success, show broadcast menu
     - If failed, send "Occupied, please try again later"
     """
-    admin_user = update.message.from_user
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
     is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -225,7 +261,7 @@ async def try_broadcast_handler(update: Update, context: CallbackContext):
     if ready:
         await show_broadcast_modes_handler(update, context)
     else:
-        await update.message.reply_text(
+        await message.reply_text(
             "Occupied, please try again later", parse_mode=ParseMode.HTML
         )
 
@@ -243,9 +279,12 @@ async def show_broadcast_modes_handler(update: Update, context: CallbackContext)
     Response:
     - Send data type menu
     """
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -260,11 +299,11 @@ async def show_broadcast_modes_handler(update: Update, context: CallbackContext)
                         mode, callback_data=f"{prefix}|{mode}"
                     )
                 ],
-                config.media_types,
+                config.broadcast_types,
             )
         )
     )
-    await update.message.reply_text(
+    await message.reply_text(
         reply_text, reply_markup=keyboard_markup, parse_mode=ParseMode.HTML
     )
 
@@ -284,10 +323,11 @@ async def set_broadcast_mode_handler(update: Update, context: CallbackContext):
     - If success, prompt user to submit content to be broadcast
     - If failed, send "Occupied, please try again later"
     """
-    admin_user = update.callback_query.from_user
+    admin_user: TgUser = update.callback_query.from_user
     is_not_allowed: bool = await is_banned(admin_user.id)
+    message = update.message
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -304,7 +344,7 @@ async def set_broadcast_mode_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     choice = query.data.split("|")[1]
-    if choice in config.media_types:
+    if choice in config.broadcast_types:
         await admin_service.set_attribute(admin_user.id, dtype=choice)
         reply_text = f"Ready to broadcast <strong>{choice}</strong>."
         await context.bot.send_message(admin_user.id, reply_text, parse_mode=ParseMode.HTML)
@@ -326,26 +366,32 @@ async def release_handler(
     Response:
     - If verbose, "Lock released"
     """
-    admin_user = update.message.from_user
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
     await admin_service.set_attribute(admin_user.id, mode=MODE_DEFAULT, dtype="")
     if verbose:
-        await update.message.reply_text(
+        await message.reply_text(
             "Lock released", parse_mode=ParseMode.HTML
         )
 
 
-async def message_handler(update: Update, context: CallbackContext, message=None):
-    admin_user: TgUser = update.message.from_user
+async def message_handler(
+        update: Update, context: CallbackContext
+):
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
     is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -354,181 +400,218 @@ async def message_handler(update: Update, context: CallbackContext, message=None
 
     output_msg: str = "Let us play dumb for now."  # default reply
     try:
-        _message = message or update.message.text
-        if mode == MODE_BROADCAST and dtype in config.media_types:
+        prompt = message.text
+        if mode == MODE_BROADCAST and dtype in config.broadcast_types:
             t1 = time.time()
-            stats: BroadcastStats = await broadcast(dtype, _message, config.seconds)
+            stats: ptb.BroadcastStats = await broadcast(dtype, prompt, message)
             t2 = time.time()
-            output_msg = f"{stats}\nElapsed time: {t2 - t1} seconds."
+            output_msg = f"{stats}\nElapsed time: {round(t2 - t1, 2)} seconds."
         else:
-            sender_info = extract_forwarded_sender_info(update)
+            sender_info = extract_forwarded_sender_info(message)
             if sender_info:
                 output_msg = sender_info
-        await update.message.reply_text(output_msg, parse_mode=ParseMode.HTML, )
+        await message.reply_text(output_msg, parse_mode=ParseMode.HTML, )
+    except FileNotFoundError as fnf_error:
+        logger.error(f"[/message_handler] => user: {admin_user.id}, output_message: {output_msg}, error: {fnf_error}")
+        await message.reply_text(f"FileNotFound: {str(fnf_error)}", parse_mode=ParseMode.HTML)
+    except ValueError as v_error:
+        logger.error(f"[/message_handler] => user: {admin_user.id}, output_message: {output_msg}, error: {v_error}")
+        await message.reply_text(f"ValueError: {str(v_error)}", parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"[/message_handler] => user: {admin_user.id}, output_message: {output_msg}, error: {e}")
-        await update.message.reply_text(str(e), parse_mode=ParseMode.HTML,)
+        await message.reply_text(f"Exception: {str(e)}", parse_mode=ParseMode.HTML)
     finally:
         if mode == MODE_BROADCAST:
             await release_handler(update, context, False)
 
 
-async def broadcast(dtype: str, content: str, seconds: float = 0.2) -> BroadcastStats:
+async def broadcast(dtype: str, content: str, message: Message) -> ptb.BroadcastStats:
     """
     Broadcast to all active subscribers
-
-    Processes:
-    - Iteratively get small batch of active subscribers
-    - Broadcast to each subscriber
 
     Response:
     - Broadcast stats
 
     Notes:
-    - Three way to broadcast: Text, Media
+    - Two way to broadcast: Text and Media
     """
-    master = telegram.Bot(token=config.master)
-    n: int = await subscriber_service.get_count(STATUS_ACTIVE)
-    acc_stats = BroadcastStats(0, 0, 0)  # Accumulated Stats
-    for i in range(0, n, config.db_find_limit):
-        # Get a small batch of subscribers
-        subscribers = await subscriber_service.get_all(
-            STATUS_ACTIVE, skip=i, limit=config.db_find_limit
-        )
-        # Switch to one of the three ways to broadcast
-        if dtype == "Text":
-            stats: BroadcastStats = await broadcast_message(
-                master, subscribers, content, seconds
-            )
-        else:
-            stats: BroadcastStats = await broadcast_media(
-                subscribers, dtype, content, config.use_multiproc, config.use_nproc, seconds,
-            )
-        acc_stats = acc_stats + stats
-    return acc_stats
 
-
-def task_wrapper(
-        method: Callable[[telegram.Bot, int, str, str, float], Coroutine[Any, Any, Message | str]],
-        subscriber: dict, url: str, caption: str, seconds: float = 0.0
-) -> Message | str:
-    """
-    Wrapper function to make async function non-async to that it can be dispatched to new process.
-    """
-    return asyncio.run(
-        method(
-            telegram.Bot(token=config.master),
-            subscriber["telegram_id"],
-            url,
-            caption,
-            seconds,
+    # Switch to one of the three ways to broadcast
+    if dtype == "TEXT":
+        stats: ptb.BroadcastStats = await broadcast_message(
+            message, content,
+            seconds=config.seconds, use_multiproc=config.use_multi_process, use_nproc=config.use_nproc
         )
-    )
+    else:
+        stats: ptb.BroadcastStats = await broadcast_media(
+            message, dtype, content,
+            seconds=config.seconds, use_multiproc=config.use_multi_process, use_nproc=config.use_nproc,
+            dummy_user=config.dummy_id
+        )
+    return stats
 
 
 async def broadcast_media(
-        subscribers, dtype: str, params: str, use_multiproc=True, use_nproc=2, seconds=0.2
-) -> BroadcastStats:
-    send_fn = api.selector(dtype)
-    url = params[:]
+        message: Message,
+        dtype: str, params: str,
+        use_multiproc=True, use_nproc=2, seconds=0.2, dummy_user=0
+) -> ptb.BroadcastStats:
+    """
+    This function supports sending a media file either by URL or from a local directory. If a URL is
+    provided, it sends the photo directly. If a file name is provided, it checks if the file exists
+    in a predefined local directory and constructs a URL to send the media file.
+    """
+    # global subscriber_service
+    url_or_filename = params[:]
     caption = ""
-    if "@@@" in url:
-        caption = url.split("@@@")[-1]
-        url = url.split("@@@")[0]
+    if "@@@" in url_or_filename:
+        caption = url_or_filename.split("@@@")[-1]
+        url_or_filename = url_or_filename.split("@@@")[0]
 
-    job_hash = hx.md5(url.encode()).hexdigest()
-    res_list: Queue[JobSentInformation] = (
-        Queue()
-    )  # import multiprocessing.pool.ApplyResult failed
-    if use_multiproc and use_nproc <= os.cpu_count():
-        with Pool(processes=use_nproc) as pool:
-            # Sequentially dispatch task to new process
-            for subscriber in subscribers:
-                if is_job_done(subscriber, job_hash):
-                    continue
-
-                user_id = subscriber["telegram_id"]
-                username = str(subscriber["username"])
-                _sub = {"telegram_id": user_id, "username": username}
-                res = pool.apply_async(
-                    task_wrapper,
-                    args=(send_fn, _sub, url, caption, seconds,),
-                    callback=lambda ret: None,
-                    error_callback=lambda err: None,
-                )
-                res_list.put(JobSentInformation(user_id, username, res))
-            #
-            pool.close()
-            pool.join()
-        # BEGIN log
-        sent_list, failed_list = group_by_result(res_list, True)
+    # Validate the URL
+    if val.isURL(url_or_filename):
+        url = url_or_filename
+        if "?" not in url:
+            url = url + f"?{config.magic_postfix}"
     else:
-        if use_multiproc:
-            logger.warning(
-                f"broadcast_media: {use_nproc} > {os.cpu_count()}\nFallback to single process operation."
+        if not val.is_valid_fileName(url_or_filename) and len(url_or_filename.split('.')) > 1:
+            raise ValueError(f"Invalid file name: {url_or_filename}")
+        file_extension = url_or_filename.split(".")[-1].lower()
+        if not val.is_ext_align_w_dtype(file_extension, dtype):
+            raise ValueError(f"Attempt to broadcast invalid file: {url_or_filename}")
+        if not fs.isLocalFile(url_or_filename, "/online"):
+            raise FileNotFoundError(url_or_filename)
+        url = f"{config.base_url}/{config.project_name}/{url_or_filename}?{config.magic_postfix}"
+
+    job_tracker = JobTracker(subscriber_service, url)
+    subscriber_list: list[Tuple[int, str]] = []
+    sent: list[ptb.JobResponse] = []
+    failed: list[ptb.JobResponse] = []
+    n: int = await subscriber_service.get_count(STATUS_ACTIVE)
+    progress_message = await message.reply_text("Broadcasting...")
+
+    broadcast_method_type = ptb.string_to_BroadcastMethodType(dtype)
+    broadcast_method = ptb.select_broadcast_method(broadcast_method_type)
+    if use_multiproc and use_nproc <= os.cpu_count():
+        broadcast_strategy = ptb.BroadcastStrategyType.ASYNCIO_PROCESS_POOL
+    else:
+        broadcast_strategy = ptb.BroadcastStrategyType.ASYNCIO_SEQUENTIAL
+
+    # Get file_id from Telegram
+    file_id = ""
+    retry = 0
+    while len(file_id) == 0 and retry < config.max_retry:
+        try:
+            file_id = await ptb.get_file_id(
+                config.master, broadcast_method, dummy_user, url, caption, seconds, config.max_retry
             )
-        res_list: list[JobSentInformation] = list()
-        master_bot = telegram.Bot(token=config.master)
-        # Sequentially send content to subscribers
-        for idx, subscriber in enumerate(subscribers):
-            if is_job_done(subscriber, job_hash):
+        except BadRequest as bad_request:
+            # TODO: if bad_request == "Wrong file identifier/http url specified":
+            url = url + f"&where={random.randint(0, 1000)}"
+            retry += 1
+            logger.info(f"{bad_request}: Attempt {retry}/{config.max_retry}, new_url={url}")
+            if retry == config.max_retry-1 and fs.isLocalFile(url_or_filename, "/online"):
+                url = f"/online/{url_or_filename}"
+        except Exception:
+            logger.error(traceback.format_exc())
+            raise
+
+    if file_id == "":
+        return ptb.evaluate_broadcast_stats(sent, failed)
+
+    for i in range(0, n, config.db_find_limit):
+        try:
+            subscribers = await subscriber_service.get_all(
+                STATUS_ACTIVE, ["telegram_id", "username", job_tracker.job_hash],
+                skip=i, limit=config.db_find_limit
+            )
+            subscriber_list.clear()
+            for subscriber in subscribers:
+                if job_tracker.is_job_done(subscriber):
+                    continue
+                subscriber_list.append((subscriber["telegram_id"], subscriber["username"]))
+
+            if len(subscriber_list) == 0:
                 continue
 
-            user_id = subscriber["telegram_id"]
-            username = str(subscriber["username"])
-            res_list.append(
-                JobSentInformation(
-                    user_id,
-                    username,
-                    await send_fn(master_bot, user_id, url, caption, seconds, ),
-                )
+            sent_list, failed_list = await ptb.handle_broadcast(
+                subscriber_list, config.master, broadcast_method, broadcast_strategy,
+                file_id, caption,
+                seconds=seconds, use_nproc=use_nproc, dummy_user=dummy_user,
+                async_callback=job_tracker
             )
+            sent.extend(sent_list)
+            failed.extend(failed_list)
+            await progress_message.edit_text(f"Tried: {len(sent) + len(failed)}/{n}")
+        except Exception as error:
+            logger.error(f"[/broadcast_media] => {error}")
+            raise
 
-        # BEGIN log
-        sent_list, failed_list = group_by_result_list(res_list, False)
+    for jsi in failed:
+        telegram_id, username, payload, error = jsi.to_tuple()
+        if isinstance(error, ptb.ErrorInformation):
+            # These users have blocked the bot
+            if error.error_type == "Forbidden":
+                await subscriber_service.set_attribute(telegram_id, status=STATUS_INACTIVE)
 
-    n_job = len(sent_list) + len(failed_list)
-    n_success = len(sent_list)
-    # Sent Case
-    for _sub in sent_list:
-        subscriber_id, _, tel_msg = _sub.to_tuple()
-        await set_job_as_done(subscriber_service, subscriber_id, job_hash)
-    # Failed Case
-    suffix = str(datetime.now().timestamp()).split(".")[0]
-    log_sheet = f"/error/log_{config.bot_id}_{dtype}_{suffix}.csv"
-    write_sent_result(log_sheet, failed_list, url)
-    # END log
-    return BroadcastStats(n_job, n_success, n_job - n_success)  # total, successful, failed
+    if len(failed) > 0:
+        log_sheet = f"/error/broadcast_media_{dtype}_{str(time.time())}.txt"
+        ptb.write_sent_result(log_sheet, failed, url)
+
+    return ptb.evaluate_broadcast_stats(sent, failed)
 
 
 async def broadcast_message(
-        master, subscribers, content: str, seconds: float = 0.2
-) -> BroadcastStats:
-    sent_queue: Queue[JobSentInformation] = Queue()
+        message: Message, content: str, use_multiproc=True, use_nproc=2, seconds=0.2
+) -> ptb.BroadcastStats:
+    n: int = await subscriber_service.get_count(STATUS_ACTIVE)
+    sent: list[ptb.JobResponse] = []
+    failed: list[ptb.JobResponse] = []
+    progress_message = await message.reply_text("Broadcasting...")
+    broadcast_method = ptb.select_broadcast_method(
+        ptb.BroadcastMethodType.TEXT
+    )
+    if use_multiproc and use_nproc <= os.cpu_count():
+        broadcast_strategy = ptb.BroadcastStrategyType.ASYNCIO_PROCESS_POOL
+    else:
+        broadcast_strategy = ptb.BroadcastStrategyType.ASYNCIO_SEQUENTIAL
 
-    for subscriber in subscribers:
-        try:
-            output_text = content.replace("username", subscriber["username"])
-            sent_queue.put(
-                JobSentInformation(
-                    subscriber["telegram_id"],
-                    subscriber["username"],
-                    await api.sendMessage(
-                        master, subscriber["telegram_id"], output_text, seconds
-                    )
-                )
-            )
-        except Exception as e:
-            print(str(e))
-    sent_list, failed_list = group_by_result(sent_queue, False)
-    n_job = len(sent_list) + len(failed_list)
-    n_success = len(sent_list)
-    # Failed
-    suffix = str(datetime.now().timestamp()).split(".")[0]
-    log_sheet = f"/error/log_{config.bot_id}_sendMessage_{suffix}.csv"
-    write_sent_result(log_sheet, failed_list, content)
-    # END log
-    return BroadcastStats(n_job, n_success, n_job - n_success)  # total, successful, failed
+    for i in range(0, n, config.db_find_limit):
+        # Get a small batch of subscribers
+        subscribers = await subscriber_service.get_all(
+            STATUS_ACTIVE, ["telegram_id", "username"], skip=i, limit=config.db_find_limit
+        )
+        subscriber_list = list(
+            map(lambda sub: (sub['telegram_id'], sub['username']), subscribers)
+        )
+        content_list = []
+        for subscriber in subscribers:
+            username = subscriber['username']
+            if username is None:
+                content_list.append(content)
+            else:
+                content_list.append(content.replace("username", username))
+        
+        content_list = list(
+            map(lambda text: f'<a href="{text}">{text}</a>' if val.isURL(text) else text, content_list)
+        )
+        if len(subscriber_list) == 0:
+            continue
+
+        sent_list, failed_list = await ptb.handle_broadcast(
+            subscriber_list, config.master, broadcast_method, broadcast_strategy,
+            content_list, "",
+            seconds=seconds, use_multiproc=use_multiproc, use_nproc=use_nproc
+        )
+        sent.extend(sent_list)
+        failed.extend(failed_list)
+        await progress_message.edit_text(f"Tried: {len(sent) + len(failed)}/{n}")
+
+    if len(failed) > 0:
+        log_sheet = f"/error/broadcast_message_{str(time.time())}.txt"
+        ptb.write_sent_result(log_sheet, failed, content)
+    
+    return ptb.evaluate_broadcast_stats(sent, failed)
 
 
 async def query_nos_button(update: Update, context: CallbackContext):
@@ -538,27 +621,74 @@ async def query_nos_button(update: Update, context: CallbackContext):
     Remarks:
     - Only active subscribers are included
     """
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
     n: int = await subscriber_service.get_count(STATUS_ACTIVE)
-    await update.message.reply_text(
+    await message.reply_text(
         f"Total: {n: 4d} subscribers\n",
         parse_mode=ParseMode.HTML,
     )
+
+
+async def terminate_handler(update: Update, context: CallbackContext):
+    """
+    Broadcast termination message to subscribers.
+
+    Processes:
+        - Try to switch to broadcast mode if not already set to broadcast mode
+        - Broadcast termination message to subscribers
+
+    Response:
+        Send user broadcast statistics
+
+    Notes:
+        This function does not terminate the bot.
+    """
+    is_edit = context.user_data['is_edit']
+    message: Message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
+    if is_not_allowed:
+        await message.reply_text(
+            "You are banned from using this bot", parse_mode=ParseMode.HTML
+        )
+        return None
+
+    ready: bool = await admin_service.try_switch_mode(
+        admin_user.id, MODE_BROADCAST, MODE_DEFAULT
+    )
+    output_message = "Occupied, please try again few minutes later"
+
+    if ready:
+        t1 = time.time()
+        stats: ptb.BroadcastStats = await broadcast_message(
+            message, config.bot_line["TERMINATION_MSG"],
+            use_multiproc=config.use_multi_process, use_nproc=config.use_nproc, seconds=config.seconds
+        )
+        t2 = time.time()
+        output_message = f"{stats}\nElapsed time: {round(t2 - t1, 2)} seconds."
+    await message.reply_text(output_message, parse_mode=ParseMode.HTML, )
+    await release_handler(update, context, False)  # always release lock
 
 
 async def export_subscribers_button(update: Update, context: CallbackContext):
     """
     Export the list of subscribers in csv format.
     """
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -567,14 +697,14 @@ async def export_subscribers_button(update: Update, context: CallbackContext):
     log_sheet = f"/data/subscribers_{suffix}.csv"
     with open(log_sheet, "w", encoding="utf-8") as file:
         columns = [
-            "telegram_id", "chat_id", "username", "mode", "status",
+            "telegram_id", "chat_id", "username", "mode", "status", "blessed",
             "n_feedback", "feedback", "reg_datetime",
         ]
         keys = ",".join(columns)
         file.write(f"{keys}\n")
 
         n: int = await subscriber_service.get_count(STATUS_ACTIVE)
-        subscribers = await subscriber_service.get_all(STATUS_ACTIVE, 0, n)
+        subscribers = await subscriber_service.get_all(STATUS_ACTIVE, None, skip=0, limit=n)
         for subscriber in subscribers:
             user_columns = subscriber.keys()
 
@@ -595,41 +725,55 @@ async def export_subscribers_button(update: Update, context: CallbackContext):
 
     try:
         logger.debug("Attempt to send document")
-        await update.message.reply_document(
+        await message.reply_document(
             log_sheet,
             caption="subscribers",
             allow_sending_without_reply=True,
             filename=log_sheet,
         )
     except Exception as e:
-        print(str(e), flush=True)
+        logger.error(f"[/export_subscribers_button]: {str(e)}")
 
 
 async def export_subscribers_full_button(update: Update, context: CallbackContext):
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
-    suffix = str(datetime.now().timestamp()).split(".")[0]
-    log_sheet = f"/data/subscribers_full_{suffix}.txt"
-    written: bool = False
-    with open(log_sheet, "w", encoding="utf-8") as file:
-        status = [STATUS_ACTIVE, STATUS_INACTIVE]
-        for _status in status:
-            n: int = await subscriber_service.get_count(_status)
-            subscribers = await subscriber_service.get_all(_status, 0, n)
-            for subscriber in subscribers:
-                file.write(f"{subscriber}\n")
-                written = True
-    if written:
-        await update.message.reply_document(
-            log_sheet, caption="subscribers", allow_sending_without_reply=True, filename=log_sheet
-        )
+    suffix = datetime.today().strftime("%Y-%m-%d") + "_" + str(datetime.now().timestamp()).split(".")[0]
+
+    status = [STATUS_ACTIVE, STATUS_INACTIVE]
+    generated_files = []
+    batch_size = 300
+    for _status in status:
+        volume = 0
+        n: int = await subscriber_service.get_count(_status)
+        for i in range(0, n, batch_size):
+            subscribers = await subscriber_service.get_all(
+                _status, None, skip=i, limit=batch_size
+            )
+            output_file_path = f"/data/subscribers_{suffix}_{_status}_volume{str(volume)}.txt"
+            generated_files.append(output_file_path)
+            with open(output_file_path, "w") as f:
+                for subscriber in subscribers:
+                    f.write(f"{subscriber}\n")
+
+            await message.reply_document(
+                output_file_path, caption="subscribers", allow_sending_without_reply=True,
+                filename=output_file_path, write_timeout=120, read_timeout=120
+            )
+            volume += 1
+    if len(generated_files) > 0:
+        for file in generated_files:
+            os.remove(file)
     else:
-        await update.message.reply_text(
+        await message.reply_text(
             "No subscribers found.", parse_mode=ParseMode.HTML
         )
 
@@ -645,10 +789,12 @@ async def set_upload_subscriber_handler(update: Update, context: CallbackContext
         - If success, invite user to upload subscribers list in .txt file.
         - If failed, prompt user to try again later.
     """
-    admin_user: TgUser = update.message.from_user
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
     is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -657,31 +803,35 @@ async def set_upload_subscriber_handler(update: Update, context: CallbackContext
     output_message: str = "Occupied, please try again later"
     if ready:
         output_message = "Ready to upload subscribers. Please provide the .txt file."
-    await update.message.reply_text(output_message, parse_mode=ParseMode.HTML)
+    await message.reply_text(output_message, parse_mode=ParseMode.HTML)
 
 
 async def upload_subscriber(update: Update, context: CallbackContext):
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
     export_path = ""
-    document = getattr(update.message, "document", None)
-    filename = getattr(document, "file_name", None)
-    mimetype = getattr(document, "mime_type", None)
+    document: Optional[Document] = getattr(message, "document", None)
+    filename: Optional[str] = getattr(document, "file_name", None)
+    mimetype: Optional[str] = getattr(document, "mime_type", None)
+    line = "default value"
     try:
         val_code, val_msg = val.addText_validation_fn(filename, document, mimetype)
         if val_code != 0:
-            await update.message.reply_text(val_msg, parse_mode=ParseMode.HTML)
+            await message.reply_text(val_msg, parse_mode=ParseMode.HTML)
             raise Exception(val_msg)
 
         export_path = f"/online/{filename}"
         stored = await store_to_drive(context, document.file_id, export_path)
         if not stored:
-            raise Exception("File download failed.")
+            raise Exception(f"({document.file_id, export_path}) => File download failed.")
         n_load, n_skip = 0, 0
         with open(export_path, "r", encoding="utf-8") as file:
             while True:
@@ -692,7 +842,8 @@ async def upload_subscriber(update: Update, context: CallbackContext):
                 if len(line) == 0:  # EOF
                     break
                 line = line.replace("'", "\"")
-                line = line.replace('None', '"None"')
+                if '"None"' not in line:
+                    line = line.replace('None', '"None"')
                 sub_json: dict = json.loads(line)
                 telegram_id: int | None = sub_json.get("telegram_id")
                 if telegram_id is None:
@@ -700,27 +851,45 @@ async def upload_subscriber(update: Update, context: CallbackContext):
                 is_exist = await subscriber_service.exists(telegram_id)
                 if is_exist:
                     n_skip += 1
-                    continue
-                subscriber: service.subscriber_service.Subscriber = create_subscriber(sub_json)
-                await subscriber_service.add(subscriber)
-                await update_non_standard_columns(subscriber_service, sub_json)
-                n_load += 1
+                    await subscriber_service.set_attribute(
+                        telegram_id, username=sub_json.get("username", "User Name"),
+                        chat_id=sub_json.get("chat_id"), mode=sub_json.get("mode"),
+                        status=sub_json.get("status"), blessed=sub_json.get("blessed"),
+                        n_feedback=sub_json.get("n_feedback"), feedback=sub_json.get("feedback"),
+                        reg_datetime=sub_json.get("reg_datetime")
+                    )
+                else:
+                    subscriber = service.subscriber_service.SubscriberService.create_subscriber(sub_json)
+                    await subscriber_service.add(subscriber)
+                    n_load += 1
+                await subscriber_service.update_non_standard_columns(sub_json)
         os.remove(export_path)
         output_message = f"Loaded: {n_load}\nSkipped: {n_skip}"
-        await update.message.reply_text(output_message, parse_mode=ParseMode.HTML)
+        await message.reply_text(output_message, parse_mode=ParseMode.HTML)
         return None
     except TelegramError as tg_err:
         logger.error(f"[/load_subscriber]=TelegramError:{str(tg_err)}")
+        await message.reply_text(
+            f"[/load_subscriber]=TelegramError:{str(tg_err)}\n{line}",
+            parse_mode=ParseMode.HTML
+        )
     except Exception as e:
-        logger.error(f"[/load_subscriber]=Exception:{str(e)}")
+        logger.error(f"[/load_subscriber]=Exception:{str(e)}\n{line}")
+        await message.reply_text(
+            f"[/load_subscriber]=Exception:{str(e)}\n{line}",
+            parse_mode=ParseMode.HTML
+        )
     if export_path != "":
         os.remove(export_path)
 
 
 async def wapi(update: Update, context: CallbackContext) -> None:
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -761,7 +930,7 @@ Condition: {condition}.
         today=today['datetime'], datetime=capture['datetime'], location=result['address'],
         temperature=capture['temp'], feels_like=capture['feelslike'], condition=capture['conditions']
     )
-    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
+    await message.reply_text(txt, parse_mode=ParseMode.HTML)
 
 
 async def empty_log(update: Update, context: CallbackContext) -> None:
@@ -778,15 +947,18 @@ async def empty_log(update: Update, context: CallbackContext) -> None:
     Notes:
         - Skip *.log files because those are the global logger.
     """
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
     log_folder = "/error"
     log_paths = os.listdir(log_folder)
-    log_paths = list(filter(lambda x: re.search(r".log$", x), log_paths))
+    log_paths = list(filter(lambda x: re.search(r".log$", x) is None, log_paths))
     log_paths = list(map(lambda x: os.path.join(log_folder, x), log_paths))
     deleted_count, total_count = 0, len(log_paths)
     for log_path in log_paths:
@@ -796,7 +968,7 @@ async def empty_log(update: Update, context: CallbackContext) -> None:
         except Exception as e:
             logger.error(f"[/empty_log]=Exception:{str(e)}")
     output_message = f"Removed: {deleted_count} of {total_count} files."
-    await update.message.reply_text(output_message, parse_mode=ParseMode.HTML)
+    await message.reply_text(output_message, parse_mode=ParseMode.HTML)
 
 
 async def empty_data(update: Update, context: CallbackContext) -> None:
@@ -810,21 +982,77 @@ async def empty_data(update: Update, context: CallbackContext) -> None:
     Returns:
         None
     """
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
-    DATA_FOLDER = "/data"
-    data_paths = os.listdir(DATA_FOLDER)
+    data_folder = "/data"
+    data_paths = os.listdir(data_folder)
     for dpath in data_paths:
-        target_path = os.path.join(DATA_FOLDER, dpath)
+        target_path = os.path.join(data_folder, dpath)
         os.remove(target_path)
 
     txt = f"Removed: {len(data_paths)} files"
-    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
+    await message.reply_text(txt, parse_mode=ParseMode.HTML)
+
+
+def attack_function(sequence_id: int, target_id: int, seconds: int):
+    """
+    Sleep for seconds and send a message to the target_id
+
+    @warning: this function should only be called by `attack(update, context)`!!!
+    """
+    if seconds > 0:
+        time.sleep(seconds)
+
+    master: telegram.Bot = telegram.Bot(token=config.master)
+    return asyncio.run(
+        master.send_message(target_id, f"Attack: {sequence_id}")
+    )
+
+
+async def attack(update: Update, context: CallbackContext):
+    """
+    Attempt to flood the target with 250 messages to test against the rate limiting set by Telegram.
+    4 processes are used and the process is expected to sleep for 0.1 seconds between each message.
+    targets are hard-coded as 76374999 and 75316412.
+    """
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
+    if is_not_allowed:
+        await message.reply_text(
+            "You are banned from using this bot", parse_mode=ParseMode.HTML
+        )
+        return None
+
+    cycles = 250
+    seconds = 0.1
+    targets = [76374999, 75316412, 6945572178]
+    try:
+        with Pool(processes=os.cpu_count()) as pool:
+            for i in range(cycles):
+                for target in targets:
+                    _ = pool.apply_async(
+                        attack_function,
+                        args=(i, target, seconds),
+                        callback=lambda ret: None,
+                        error_callback=lambda err: logger.error(f"[/attack]=Exception:{str(err)}")
+                    )
+            pool.close()
+            pool.join()
+        await message.reply_text(f"Sent to {targets}", parse_mode=ParseMode.HTML)
+    except TelegramError as tg_err:
+        logger.error(f"[/attack]=TelegramError:{str(tg_err)}")
+    except Exception as e:
+        logger.error(f"[/attack]=Exception:{str(e)}")
 
 
 async def store_to_drive(context: CallbackContext, file_id: str, export_path: str):
@@ -866,7 +1094,7 @@ async def store_to_drive(context: CallbackContext, file_id: str, export_path: st
         logger.error(f"[store_to_drive]=TelegramError:{str(tg_err)}")
     except Exception as e:
         logger.error(f"[store_to_drive]=Exception:{str(e)}")
-    raise Exception("File download failed.")
+    raise Exception(f"({file_id}, {export_path}) => File download failed.")
 
 
 async def addPhoto(update: Update, context: CallbackContext):
@@ -899,92 +1127,104 @@ async def addPhoto(update: Update, context: CallbackContext):
     This function assumes that the `update` object contains a valid message with a photo
     and optionally a caption. It is designed to be used with the telegram bot API.
     """
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
-    user = update.message.from_user
-    filename = update.message.caption  # this does not retrieve the text portion
+    filename = message.caption  # this does not retrieve the text portion
 
-    in_photo = getattr(update.message, "photo", None)
-    in_document = getattr(update.message, "document", None)
+    in_photo = getattr(message, "photo", None)
+    in_document = getattr(message, "document", None)
 
     if in_photo:
         telegram_file_id = in_photo[-1].file_id
     elif in_document:
         if in_document.mime_type not in ["image/jpeg", "image/png"]:
-            return await update.message.reply_text(
+            return await message.reply_text(
                 "Only image files are supported.", parse_mode=ParseMode.HTML
             )
         telegram_file_id = in_document.file_id
         if filename is None:
-            filename = update.message.document.file_name
+            filename = message.document.file_name
     else:
         output_message = "The attached file failed to add as a photo. Please try to add with compression."
-        await update.message.reply_text(output_message, parse_mode=ParseMode.HTML)
+        await message.reply_text(output_message, parse_mode=ParseMode.HTML)
         return None
 
     val_code, val_msg = val.addPhoto_validation_fn(filename, telegram_file_id)
     if val_code != 0:
-        return await update.message.reply_text(val_msg, parse_mode=ParseMode.HTML)
+        return await message.reply_text(val_msg, parse_mode=ParseMode.HTML)
 
     filename = patch_extension(filename)
     export_path = f"/online/{filename}"
     try:
         stored = await store_to_drive(context, telegram_file_id, export_path)
         if stored:
-            return await update.message.reply_text("Success", parse_mode=ParseMode.HTML)
+            return await message.reply_text("Success", parse_mode=ParseMode.HTML)
         else:
-            return await update.message.reply_text(
+            return await message.reply_text(
                 "File exists.", parse_mode=ParseMode.HTML
             )
     except Exception as e:
-        logger.error(f"[/addPhoto] => user: {user.id}, error: {e}")
-        await update.message.reply_text(f"Please try again.\n{e}", parse_mode=ParseMode.HTML,)
+        logger.error(f"[/addPhoto] => user: {admin_user.id}, error: {e}")
+        await message.reply_text(f"Please try again.\n{e}", parse_mode=ParseMode.HTML, )
         await release_handler(update, context, False)
+
+
+async def handle_file_upload(update: Update, context: CallbackContext, dtype: str):
+    if dtype == "Photo":
+        await addPhoto(update, context)
+    elif dtype == "Document":
+        await addDocument(update, context)
+    else:  # dtype == "Video":
+        await addVideo(update, context)
 
 
 async def attachment_handler(update: Update, context: CallbackContext):
     """ """
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
-
-    admin: TgUser = update.message.from_user
-    mode: str | None = await admin_service.get_attribute(admin.id, "mode")
-    dtype: str | None = await admin_service.get_attribute(admin.id, "dtype")
-
-    if mode == MODE_ADD_FILE:
-        if dtype == MODE_ADD_PHOTO:
-            await addPhoto(update, context)
-            # reset mode to ensure all attachment are properly handled
-            await admin_service.set_attribute(admin.id, mode=MODE_DEFAULT, dtype="")
-            return None
-        if dtype == MODE_ADD_DOCUMENT:
-            await addDocument(update, context)
-            await admin_service.set_attribute(admin.id, mode=MODE_DEFAULT, dtype="")
-            return None
-        if dtype == MODE_ADD_VIDEO:
-            await addVideo(update, context)
-            await admin_service.set_attribute(admin.id, mode=MODE_DEFAULT, dtype="")
-            return None
-    if mode == MODE_LOAD_SUB:
-        await upload_subscriber(update, context)
-        await admin_service.set_attribute(admin.id, mode=MODE_DEFAULT)
-        return None
-    await update.message.reply_text("Invalid mode", parse_mode=ParseMode.HTML)
+    try:
+        mode: str | None = await admin_service.get_attribute(admin_user.id, "mode")
+        if mode == MODE_ADD_FILE:
+            dtype: str | None = await admin_service.get_attribute(admin_user.id, "dtype")
+            if dtype not in config.upload_prompt_message.keys():
+                await message.reply_text("Invalid upload type.", parse_mode=ParseMode.HTML)
+                return None
+            await handle_file_upload(update, context, dtype)
+            await admin_service.set_attribute(admin_user.id, mode=MODE_DEFAULT, dtype="")
+        elif mode == MODE_LOAD_SUB:
+            await upload_subscriber(update, context)
+            await admin_service.set_attribute(admin_user.id, mode=MODE_DEFAULT)
+        else:
+            await message.reply_text("Invalid mode", parse_mode=ParseMode.HTML)
+    except Exception as err:
+        logger.error(f"[/attachment_handler] => {str(err)}")
+        await message.reply_text(
+            "Please try again or contact developer.", parse_mode=ParseMode.HTML
+        )
 
 
 async def get_photo(update: Update, context: CallbackContext):
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -992,22 +1232,25 @@ async def get_photo(update: Update, context: CallbackContext):
     folder = f"/online"
     file_list = fs.getSubFiles(folder)
     if len(file_list) == 0:
-        await update.message.reply_text("No photo found", parse_mode=ParseMode.HTML)
+        await message.reply_text("No photo found", parse_mode=ParseMode.HTML)
         return None
     file_list.sort(key=lambda x: x.lower(), reverse=False)
     output_message = "Photos:\n==========\n"
     for filename in file_list:
         file_extension = filename.split(".")[-1]
-        if file_extension in ["jpg", "jpeg", "png"]:
+        if file_extension.lower() in ["jpg", "jpeg", "png"]:
             output_message += f"=> {filename}\n"
     output_message += "==========\n"
-    await update.message.reply_text(output_message, parse_mode=ParseMode.HTML)
+    await message.reply_text(output_message, parse_mode=ParseMode.HTML)
 
 
 async def get_video(update: Update, context: CallbackContext):
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -1015,22 +1258,25 @@ async def get_video(update: Update, context: CallbackContext):
     folder = f"/online"
     file_list = fs.getSubFiles(folder)
     if len(file_list) == 0:
-        await update.message.reply_text("No video found", parse_mode=ParseMode.HTML)
+        await message.reply_text("No video found", parse_mode=ParseMode.HTML)
         return None
     file_list.sort(key=lambda x: x.lower(), reverse=False)
-    output_message = "Photos:\n==========\n"
+    output_message = "Videos:\n==========\n"
     for filename in file_list:
         file_extension = filename.split(".")[-1]
         if file_extension in ["mp4", "mkv"]:
             output_message += f"=> {filename}\n"
     output_message += "==========\n"
-    await update.message.reply_text(output_message, parse_mode=ParseMode.HTML)
+    await message.reply_text(output_message, parse_mode=ParseMode.HTML)
 
 
 async def get_document(update: Update, context: CallbackContext):
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -1038,64 +1284,79 @@ async def get_document(update: Update, context: CallbackContext):
     folder = f"/online"
     file_list = fs.getSubFiles(folder)
     if len(file_list) == 0:
-        await update.message.reply_text("No document found", parse_mode=ParseMode.HTML)
+        await message.reply_text("No document found", parse_mode=ParseMode.HTML)
         return None
     file_list.sort(key=lambda x: x.lower(), reverse=False)
-    output_message = "Photos:\n==========\n"
+    output_message = "Documents:\n==========\n"
     for filename in file_list:
         file_extension = filename.split(".")[-1]
         if file_extension in ["pdf"]:
             output_message += f"=> {filename}\n"
     output_message += "==========\n"
-    await update.message.reply_text(output_message, parse_mode=ParseMode.HTML)
+    await message.reply_text(output_message, parse_mode=ParseMode.HTML)
 
 
 async def clearTaskLog(update: Update, context: CallbackContext) -> None:
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
-    task_name = update.message.text
+    task_name = message.text
     task_name = task_name.replace("/reset_file_tracking", "")
     task_name = task_name.strip()
     if task_name is None or task_name == "":
-        await update.message.reply_text(
+        await message.reply_text(
             f"FAILED. Missing filename.", parse_mode=ParseMode.HTML
         )
         return None
 
-    task_hash = hx.md5(task_name.encode()).hexdigest()
-    modified_count = await subscriber_service.clear_task_log(task_hash)
+    if val.isURL(task_name):
+        if "?" in task_name:
+            task_name = task_name.split("?")[0]
+    else:
+        if fs.isLocalFile(task_name, "/online"):
+            task_name = f"{config.base_url}/{config.project_name}/{task_name}"
+        else:
+            await message.reply_text("FAILED. File not found.", parse_mode=ParseMode.HTML)
+            return None
+
+    job_hash = JobTracker.construct_job_hash(task_name)
+    modified_count = await subscriber_service.clear_task_log(job_hash)
     if modified_count > 0:
         output_msg = f'Clear log for "{task_name}"'
     else:
         output_msg = f'No log found for "{task_name}"'
-    await update.message.reply_text(output_msg, parse_mode=ParseMode.HTML)
+    await message.reply_text(output_msg, parse_mode=ParseMode.HTML)
     return None
 
 
 async def addDocument(update: Update, context: CallbackContext):
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
-    admin: TgUser = update.message.from_user
-    filename = update.message.caption  # this does not retrieve the text portion
+    filename = message.caption  # this does not retrieve the text portion
 
-    in_document = getattr(update.message, "document", None)
+    in_document = getattr(message, "document", None)
 
     if in_document:
         telegram_file_id = in_document.file_id
         if filename is None:
             filename = in_document.file_name
     else:
-        await update.message.reply_text(
+        await message.reply_text(
             "Please attach a non-image file.", parse_mode=ParseMode.HTML
         )
         return None
@@ -1105,7 +1366,7 @@ async def addDocument(update: Update, context: CallbackContext):
         filename, telegram_file_id, mimetype
     )
     if val_code != 0:
-        return await update.message.reply_text(val_msg, parse_mode=ParseMode.HTML)
+        return await message.reply_text(val_msg, parse_mode=ParseMode.HTML)
 
     output_msg = "Success"
     export_path = f"/online/{filename}"
@@ -1113,10 +1374,10 @@ async def addDocument(update: Update, context: CallbackContext):
         stored = await store_to_drive(context, telegram_file_id, export_path)
         if not stored:
             output_msg = "File exists."
-        await update.message.reply_text(output_msg, parse_mode=ParseMode.HTML)
+        await message.reply_text(output_msg, parse_mode=ParseMode.HTML)
     except Exception as e:
-        logger.error(f"[/addDocument] => user: {admin.id}, error: {e}")
-        await update.message.reply_text(
+        logger.error(f"[/addDocument] => user: {admin_user.id}, error: {e}")
+        await message.reply_text(
             f"Please try again.\n{e}",
             parse_mode=ParseMode.HTML,
         )
@@ -1124,18 +1385,19 @@ async def addDocument(update: Update, context: CallbackContext):
 
 
 async def addVideo(update: Update, context: CallbackContext):
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
-    admin: TgUser = update.message.from_user
-
-    in_video = getattr(update.message, "video", None)
-    in_document = getattr(update.message, "document", None)
-    filename = update.message.caption
+    in_video = getattr(message, "video", None)
+    in_document = getattr(message, "document", None)
+    filename = message.caption
 
     if in_video:
         telegram_file_id = in_video.file_id
@@ -1146,13 +1408,13 @@ async def addVideo(update: Update, context: CallbackContext):
         telegram_file_id = in_document.file_id
         mimetype = in_document.mime_type
     else:
-        logger.info(f"[/addVideo] => user: {admin.id}, error: {update.message}")
-        await update.message.reply_text("Please attach a video file.", parse_mode=ParseMode.HTML)
+        logger.info(f"[/addVideo] => user: {admin_user.id}, error: {message}")
+        await message.reply_text("Please attach a video file.", parse_mode=ParseMode.HTML)
         return None
 
     val_code, val_msg = val.addVideo_validation_fn(filename, telegram_file_id, mimetype)
     if val_code != 0:
-        return await update.message.reply_text(val_msg, parse_mode=ParseMode.HTML)
+        return await message.reply_text(val_msg, parse_mode=ParseMode.HTML)
 
     output_msg = "Success"
     export_path = f"/online/{filename}"
@@ -1160,10 +1422,10 @@ async def addVideo(update: Update, context: CallbackContext):
         stored = await store_to_drive(context, telegram_file_id, export_path)
         if not stored:
             output_msg = "File exists."
-        await update.message.reply_text(output_msg, parse_mode=ParseMode.HTML)
+        await message.reply_text(output_msg, parse_mode=ParseMode.HTML)
     except Exception as e:
-        logger.error(f"[/addVideo] => user: {admin.id}, error: {e}")
-        await update.message.reply_text(
+        logger.error(f"[/addVideo] => user: {admin_user.id}, error: {e}")
+        await message.reply_text(
             f"Please try again.\n{e}",
             parse_mode=ParseMode.HTML,
         )
@@ -1171,53 +1433,51 @@ async def addVideo(update: Update, context: CallbackContext):
 
 
 async def add_file_type_handle(update: Update, context: CallbackContext):
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
-    admin: TgUser = update.message.from_user
     ready: bool = await admin_service.try_switch_mode(
-        admin.id, MODE_ADD_FILE, MODE_DEFAULT
+        admin_user.id, MODE_ADD_FILE, MODE_DEFAULT
     )
     if ready:
         await show_add_file_modes_handle(update, context)
     else:
-        await update.message.reply_text(
+        await message.reply_text(
             "Occupied, please try again later", parse_mode=ParseMode.HTML
         )
 
 
 async def show_add_file_modes_handle(update: Update, context: CallbackContext):
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
-    admin: TgUser = update.message.from_user
-
-    REPLY_TEXT = "Select media type you would like to add\n\n"
-    modes = [
-        MODE_ADD_PHOTO,
-        MODE_ADD_DOCUMENT,
-        MODE_ADD_VIDEO,
-    ]
+    output_message = "Select media type you would like to add\n\n"
     keyboard_markup = InlineKeyboardMarkup(
         list(
             map(
                 lambda mode: [
                     InlineKeyboardButton(mode, callback_data=f"set_file_type|{mode}")
                 ],
-                modes,
+                config.upload_prompt_message.keys(),
             )
         )
     )
-    await update.message.reply_text(
-        REPLY_TEXT, reply_markup=keyboard_markup, parse_mode=ParseMode.HTML
+    await message.reply_text(
+        output_message, reply_markup=keyboard_markup, parse_mode=ParseMode.HTML
     )
 
 
@@ -1249,46 +1509,35 @@ async def set_file_type_handle(update: Update, context: CallbackContext):
     await query.answer()
     choice = query.data.split("|")[1]
 
-    output_dict = dict()
-    output_dict[MODE_ADD_PHOTO] = (
-        "Ready to accept <strong>Photo</strong>.\n"
-        "Please provide photo name as caption with extension."
-    )
-    output_dict[MODE_ADD_DOCUMENT] = (
-        "Ready to accept <strong>Document file</strong>.\n"
-        "Please provide file name as caption with extension."
-    )
-    output_dict[MODE_ADD_VIDEO] = (
-        "Ready to accept <strong>Video</strong>.\n"
-        "Please provide file name as caption with extension."
-    )
-
     output_msg = "Invalid choice."
-    if choice in output_dict.keys():
+    if choice in config.upload_prompt_message.keys():
         await admin_service.set_attribute(admin.id, dtype=choice)
-        output_msg = f"{output_dict[choice]}"
+        output_msg = f"{config.upload_prompt_message[choice]}"
 
-    await context.bot.send_message(admin.id, output_msg, parse_mode=ParseMode.HTML,)
+    await context.bot.send_message(admin.id, output_msg, parse_mode=ParseMode.HTML, )
 
 
 async def grant_handler(update: Update, context: CallbackContext) -> None:
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
-    prompt = update.message.text
+    prompt = message.text
     prompt = prompt.replace("/grant", "").strip()
     if len(prompt) == 0:
-        await update.message.reply_text(
+        await message.reply_text(
             "FAILED: Empty input.", parse_mode=ParseMode.HTML
         )
         return None
     superuser_info = prompt.split("|")
     if len(superuser_info) != 2:
-        await update.message.reply_text(
+        await message.reply_text(
             "FAILED: Invalid input. Please supply superuser telegram id and username (separate by |).",
             parse_mode=ParseMode.HTML,
         )
@@ -1296,27 +1545,30 @@ async def grant_handler(update: Update, context: CallbackContext) -> None:
     tel_id, username = superuser_info
     try:
         await super_service.grant(int(tel_id), username)
-        await update.message.reply_text(
+        await message.reply_text(
             f"Permission granted to {username} ({tel_id}).", parse_mode=ParseMode.HTML
         )
     except Exception as err:
-        logger.error(f"[/grant] => user: {update.message.from_user.id}, error: {err}")
-        await update.message.reply_text("Failed.", parse_mode=ParseMode.HTML)
+        logger.error(f"[/grant] => user: {admin_user.id}, error: {err}")
+        await message.reply_text("Failed.", parse_mode=ParseMode.HTML)
     return None
 
 
 async def revoke_handler(update: Update, context: CallbackContext) -> None:
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
 
-    prompt = update.message.text
+    prompt = message.text
     prompt = prompt.replace("/revoke", "").strip()
     if len(prompt) == 0:
-        await update.message.reply_text(
+        await message.reply_text(
             "FAILED: Empty input.", parse_mode=ParseMode.HTML
         )
         return None
@@ -1324,7 +1576,7 @@ async def revoke_handler(update: Update, context: CallbackContext) -> None:
         tel_id = int(prompt)
         is_not_allow: bool = await super_service.not_in_allow_list(tel_id)
         if is_not_allow:
-            await update.message.reply_text(
+            await message.reply_text(
                 f"{tel_id} is not a superuser.", parse_mode=ParseMode.HTML
             )
         else:
@@ -1334,19 +1586,22 @@ async def revoke_handler(update: Update, context: CallbackContext) -> None:
                 raise Exception(
                     f"Failed to revoke {tel_id}. Deleted count: {deleted_count}"
                 )
-            await update.message.reply_text(
+            await message.reply_text(
                 f"Permission revoked to {su[1]} ({tel_id}).", parse_mode=ParseMode.HTML
             )
     except Exception as e:
-        logger.error(f"[/revoke] => user: {update.message.from_user.id}, error: {e}")
-        await update.message.reply_text("Failed.", parse_mode=ParseMode.HTML)
+        logger.error(f"[/revoke] => user: {admin_user.id}, error: {e}")
+        await message.reply_text("Failed.", parse_mode=ParseMode.HTML)
     return None
 
 
 async def list_superuser_handler(update: Update, context: CallbackContext) -> None:
-    is_not_allowed: bool = await is_banned(update.message.from_user.id)
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
     if is_not_allowed:
-        await update.message.reply_text(
+        await message.reply_text(
             "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
         return None
@@ -1356,10 +1611,10 @@ async def list_superuser_handler(update: Update, context: CallbackContext) -> No
     for idx, su in enumerate(superuser, 1):
         output_msg += f"[{idx}] {su[0]} | {su[1]}\n"
 
-    await update.message.reply_text(output_msg, parse_mode=ParseMode.HTML)
+    await message.reply_text(output_msg, parse_mode=ParseMode.HTML)
 
 
-async def error_handler(update: Update, context: CallbackContext) -> None:
+async def error_handler(update: object, context: CallbackContext) -> None:
     logger.error(msg="Exception while handling an update:", exc_info=context.error)
 
     try:
@@ -1370,22 +1625,91 @@ async def error_handler(update: Update, context: CallbackContext) -> None:
         tb_string = "".join(tb_list)
         update_str = update.to_dict() if isinstance(update, Update) else str(update)
         message = (
-            f"An exception was raised while handling an update\n"
-            f"<pre>update = {html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))}"
-            "</pre>\n\n"
-            f"<pre>{html.escape(tb_string)}</pre>"
+            f"update = {html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))}"
+            f"{html.escape(tb_string)}"
         )
 
         # split text into multiple messages due to 4096 character limit
         for message_chunk in split_text_into_chunks(message, 4096):
             try:
                 await context.bot.send_message(
-                    update.effective_chat.id, message_chunk, parse_mode=ParseMode.HTML
+                    update.effective_chat.id, f"<pre>{message_chunk}</pre>", parse_mode=ParseMode.HTML
                 )
             except telegram.error.BadRequest:
                 # answer has invalid characters, so we send it without parse_mode
-                await context.bot.send_message(update.effective_chat.id, message_chunk)
-    except Exception as _:
-        await context.bot.send_message(
-            update.effective_chat.id, "Some error in error handler"
+                await context.bot.send_message(
+                    update.effective_chat.id, f"<pre>{message_chunk}</pre>",
+                    parse_mode=ParseMode.HTML
+                )
+    except Exception as e:
+        logger.error("An error occurred while handling an error", exc_info=e)
+        # await context.bot.send_message(
+        #     update.effective_chat.id, "Some error in error handler"
+        # )
+
+
+async def who_has_this_file(update: Update, context: CallbackContext):
+    is_edit = context.user_data['is_edit']
+    message = update.edited_message if is_edit else update.message
+    admin_user: TgUser = message.from_user
+    is_not_allowed: bool = await is_banned(admin_user.id)
+    if is_not_allowed:
+        await message.reply_text(
+            "You are banned from using this bot", parse_mode=ParseMode.HTML
         )
+        return None
+
+    prompt = message.text
+    prompt = prompt.replace("/who_has_this_file", "").strip()
+    if len(prompt) == 0:
+        await message.reply_text(
+            "FAILED: Empty input.", parse_mode=ParseMode.HTML
+        )
+        return None
+
+    test_case = []
+    if val.isURL(prompt):
+        if "?" in prompt:
+            test_case.append(prompt.split("?")[0])
+    else:
+        test_case.append(f"{config.base_url}/{config.project_name}/{prompt}")  # photo, document, video
+
+    def pick(inp_dict, columns) -> dict:
+        return {k: v for k, v in inp_dict.items() if k in columns}
+
+    def list_to_string(lst: list[Any]) -> str:
+        lst = list(map(lambda x: "None" if x is None else x, lst))  # Handle None value
+        lst = list(map(lambda x: str(x), lst))                      # Convert to string
+        return ",".join(lst)
+    
+    generated_file = []
+    target_columns = ["telegram_id", "username", "status", "mode"]
+    for test_index, tc in enumerate(test_case, 1):
+        job_hash = JobTracker.construct_job_hash(tc)
+        subscriber_list = await subscriber_service.who_has_this_file(
+            job_hash, target_columns
+        )
+        if len(subscriber_list) == 0:
+            continue
+        
+        output_msg = f"Content: {tc}\n----------\nSubscriber List:\n----------\n"
+        for idx, sub in enumerate(subscriber_list, 1):
+            values = list(pick(sub, target_columns).values())
+            value_string = list_to_string(values)
+            output_msg += f"[{idx}] {value_string}\n"
+        file_path = f"/data/who_has_this_file_{test_index}.txt"
+        with open(file_path, "w") as f:
+            f.write(output_msg)
+        generated_file.append(file_path)
+    
+    if len(generated_file) == 0:
+        await message.reply_text("No subscriber.", parse_mode=ParseMode.HTML)
+    else:
+        for gf in generated_file:
+            await message.reply_document(
+                document=open(gf, "rb"),
+                caption=f"Who has this file? {prompt}",
+                parse_mode=ParseMode.HTML, 
+                allow_sending_without_reply=True, write_timeout=120, read_timeout=120
+            )
+            os.remove(gf)

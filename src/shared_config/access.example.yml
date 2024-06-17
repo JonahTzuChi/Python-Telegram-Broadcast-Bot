@@ -1,0 +1,10 @@
+MASTER_TOKEN=""
+WORKER_TOKEN=""
+
+# Description: This file define the access control for the bot to interact with the worker.
+SYSADMIN_TID: []  # User ID of the sysadmin
+
+ALLOWED_TELEGRAM_ID: []  # User ID of the users that are allowed to use the bot
+ALLOWED_USERNAME: []  # Username of the users that are allowed to use the bot
+
+DUMMY_ID: 0  # Dummy ID for the bot to send file to retrieve the file_id

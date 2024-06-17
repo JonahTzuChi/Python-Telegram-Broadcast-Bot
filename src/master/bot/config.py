@@ -2,30 +2,39 @@ import yaml
 import dotenv
 from pathlib import Path
 
-config_dir = Path(__file__).parent.parent.resolve() / "config"
+shared_config_dir = Path(__file__).parent.parent.resolve() / "shared_config"
+with open(shared_config_dir / "bot_line.production.yml", 'r') as f:
+    bot_line = yaml.safe_load(f)
 
-# load yaml config
-with open(config_dir / "config.yml", 'r') as f:
-    config_yaml = yaml.safe_load(f)
+with open(shared_config_dir / "general.production.yml", 'r') as f:
+    general_config_yaml = yaml.safe_load(f)
+# Extracting `general_config_yaml`
+seconds: float = general_config_yaml["SLEEP_SECONDS"]
+max_retry: int = general_config_yaml["MAX_RETRY"]
+use_multi_process: bool = general_config_yaml["USE_MULTI_PROCESS"]
+use_nproc: int = general_config_yaml["USE_NPROC"]
+# broadcast_types: list[str] = general_config_yaml["BROADCAST_TYPES"]
+# upload_types: list[str] = general_config_yaml["UPLOAD_TYPES"]
 
-# load .env config
-config_env = dotenv.dotenv_values(config_dir / "config.env")
+magic_postfix = general_config_yaml["MAGIC_POSTFIX"]
+db_find_limit: int = general_config_yaml["DB_FIND_LIMIT"]
 
-# config parameters
-token = config_yaml["TELEGRAM_TOKEN"]
+# Load access control list
+with open(shared_config_dir / "access.production.yml", 'r') as f:
+    acl_config_yaml = yaml.safe_load(f)
+sysadmin_tid: list[int] = acl_config_yaml["SYSADMIN_TID"]
+dummy_id: int = acl_config_yaml["DUMMY_ID"]
+token: str = acl_config_yaml["MASTER_TOKEN"]
 
-greeting_1_msg = config_yaml["GREETING_1_MSG"]
-greeting_2_msg = config_yaml["GREETING_2_MSG"]
-subscribe_msg = config_yaml["SUBSCRIBE_MSG"]
-unsubscribe_msg = config_yaml["UNSUBSCRIBE_MSG"]
-sorry_single_language_only = config_yaml["SORRY_SINGLE_LANG_ONLY"]
-sorry_noreply = config_yaml["SORRY_NOREPLY"]
+# Load environmental variables
+shared_config_env = dotenv.dotenv_values(shared_config_dir / "config.production.env")
+db_host = shared_config_env["MONGODB_HOST"]
+db_port = shared_config_env["MONGODB_PORT"]
+db_name = shared_config_env["MONGODB_DATABASE"]
+mongodb_uri = f"mongodb://{db_host}:{db_port}"
 
-mongodb_uri = f"mongodb://mongo:{config_env['MONGODB_PORT']}"
-mongodb_database = config_env['MONGODB_DATABASE']
+domain: str = shared_config_env["DOMAIN"]
+project_name: str = shared_config_env["PROJECT_NAME"]
+base_url: str = f"https://{domain}"
 
-base_server = config_yaml["MY_SERVER"]
-
-seconds = config_yaml["SLEEP_SECONDS"]
-
-magic_postfix = config_yaml["MAGIC_POSTFIX"]
+weather_api_key: str = shared_config_env["WEATHER_API_KEY"]

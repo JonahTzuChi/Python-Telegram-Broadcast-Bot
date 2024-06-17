@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 from motor.motor_asyncio import AsyncIOMotorCollection
 from datetime import datetime
 
@@ -19,7 +19,7 @@ class Subscriber:
         return {
             "telegram_id": self.tel_id,
             "chat_id": self.chat_id,
-            "username": self.username,
+            "username": self.username if self.username else "User Name",
             "mode": self.mode,
             "status": self.status,
             "n_feedback": self.n_feedback,
@@ -40,9 +40,39 @@ class SubscriberService:
             raise ValueError(f"{subscriber_id} does not exists")
         return False
 
-    async def get_all(self, target_status: str, skip: int, limit: int):
+    async def get_all(
+            self, target_status: str, target_columns: Optional[list[str]], skip: int = 0, limit: int = 100
+    ):
+        """Get all subscribers with the target status.
+
+        Notes:
+        ---------------------------
+        Claude: In MongoDB, when you use the find method with a projection that includes a field that doesn't exist in
+        some documents, MongoDB will handle it gracefully without throwing an error.
+
+        Here's what happens:
+        - Documents without the specified field:
+            - For documents that don't have the field specified in the projection,
+                MongoDB will simply exclude it and return the other fields that exist in those documents.
+        - Documents with the specified field:
+            - For documents that have the field specified in the projection, MongoDB will include that field in
+        the result.
+
+        - If the target_columns is None, the projection will exclude the _id field.
+        - If the target_columns is an empty list, the projection will exclude the _id field.
+        """
+        search_filter = {"status": target_status}
+        if target_columns is None:
+            search_projection = {"_id": 0}
+        elif len(target_columns) == 0:
+            search_projection = {"_id": 0}
+        else:
+            search_projection = {"telegram_id": 1, "username": 1, "_id": 0}
+            for col in target_columns:
+                search_projection.update({col: 1})
+
         find_cursor = self.__collection.find(
-            {"status": target_status}, {"_id": 0}, skip=skip, limit=limit
+            search_filter, search_projection, skip=skip, limit=limit
         )
         return await find_cursor.to_list(length=None)
 
