@@ -41,28 +41,16 @@ def run_bot(bot: telegram.ext.Application, ) -> None:
     bot.add_handler(CommandHandler("terminate", handlers.terminate_handler), group=1)
     bot.add_handler(CommandHandler("export", handlers.export_subscribers_button), group=1)
 
-    bot.add_handler(CommandHandler("weather", handlers.wapi), group=1)
     bot.add_handler(CommandHandler("photo", handlers.get_photo), group=1)
     bot.add_handler(CommandHandler("video", handlers.get_video), group=1)
     bot.add_handler(CommandHandler("document", handlers.get_document), group=1)
     bot.add_handler(CommandHandler("reset_file_tracking", handlers.clearTaskLog), group=1)
     
     # sys-admin
-    bot.add_handler(CommandHandler("delete_log", handlers.empty_log, filters=sysadmin_filter), group=1)
-    bot.add_handler(CommandHandler("delete_data", handlers.empty_data, filters=sysadmin_filter), group=1)
-    bot.add_handler(CommandHandler("attack", handlers.attack, filters=sysadmin_filter), group=1)
     bot.add_handler(CommandHandler("grant", handlers.grant_handler, filters=sysadmin_filter), group=1)
     bot.add_handler(CommandHandler("revoke", handlers.revoke_handler, filters=sysadmin_filter), group=1)
     bot.add_handler(
         CommandHandler("show_superuser", handlers.list_superuser_handler, filters=sysadmin_filter),
-        group=1
-    )
-    bot.add_handler(
-        CommandHandler("export_full", handlers.export_subscribers_full_button, filters=sysadmin_filter),
-        group=1
-    )
-    bot.add_handler(
-        CommandHandler("upload_subscriber_list", handlers.set_upload_subscriber_handler, filters=sysadmin_filter),
         group=1
     )
     bot.add_handler(

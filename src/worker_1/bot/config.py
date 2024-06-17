@@ -28,7 +28,7 @@ magic_postfix = general_config_yaml["MAGIC_POSTFIX"]
 db_find_limit: int = general_config_yaml["DB_FIND_LIMIT"]
 
 # Load access control list
-with open(shared_config_dir / "worker_access.production.yml", 'r') as f:
+with open(shared_config_dir / "access.production.yml", 'r') as f:
     acl_config_yaml = yaml.safe_load(f)
 token: str = acl_config_yaml["WORKER_TOKEN"]
 master: str = acl_config_yaml["MASTER_TOKEN"]
@@ -44,8 +44,6 @@ db_port = shared_config_env["MONGODB_PORT"]
 db_name = shared_config_env["MONGODB_DATABASE"]
 mongodb_uri = f"mongodb://{db_host}:{db_port}"
 
-domain: str = shared_config_env["DOMAIN"]
+# domain: str = shared_config_env["DOMAIN"]
 project_name: str = shared_config_env["PROJECT_NAME"]
-base_url: str = f"https://{domain}"
-
-weather_api_key: str = shared_config_env["WEATHER_API_KEY"]
+# base_url: str = f"https://{domain}"

@@ -9,7 +9,6 @@ MODE_ADD_PHOTO = "add_photo"
 MODE_ADD_BLESSING = "add_blessing"
 MODE_ADD_DOCUMENT = "add_document"
 MODE_ADD_VIDEO = "add_video"
-MODE_LOAD_SUB = "load_sub"
 
 STATUS_ACTIVE = "active"
 STATUS_INACTIVE = "inactive"

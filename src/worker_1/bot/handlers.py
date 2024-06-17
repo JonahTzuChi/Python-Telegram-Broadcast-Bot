@@ -481,7 +481,7 @@ async def broadcast_media(
             raise ValueError(f"Attempt to broadcast invalid file: {url_or_filename}")
         if not fs.isLocalFile(url_or_filename, "/online"):
             raise FileNotFoundError(url_or_filename)
-        url = f"{config.base_url}/{config.project_name}/{url_or_filename}?{config.magic_postfix}"
+        url = f"/online/{url_or_filename}"
 
     job_tracker = JobTracker(subscriber_service, url)
     subscriber_list: list[Tuple[int, str]] = []
@@ -506,12 +506,14 @@ async def broadcast_media(
                 config.master, broadcast_method, dummy_user, url, caption, seconds, config.max_retry
             )
         except BadRequest as bad_request:
+            logger.error(traceback.format_exc())
+            raise
             # TODO: if bad_request == "Wrong file identifier/http url specified":
-            url = url + f"&where={random.randint(0, 1000)}"
-            retry += 1
-            logger.info(f"{bad_request}: Attempt {retry}/{config.max_retry}, new_url={url}")
-            if retry == config.max_retry-1 and fs.isLocalFile(url_or_filename, "/online"):
-                url = f"/online/{url_or_filename}"
+            # url = url + f"&where={random.randint(0, 1000)}"
+            # retry += 1
+            # logger.info(f"{bad_request}: Attempt {retry}/{config.max_retry}, new_url={url}")
+            # if retry == config.max_retry-1 and fs.isLocalFile(url_or_filename, "/online"):
+            #     url = f"/online/{url_or_filename}"
         except Exception:
             logger.error(traceback.format_exc())
             raise
@@ -735,326 +737,6 @@ async def export_subscribers_button(update: Update, context: CallbackContext):
         logger.error(f"[/export_subscribers_button]: {str(e)}")
 
 
-async def export_subscribers_full_button(update: Update, context: CallbackContext):
-    is_edit = context.user_data['is_edit']
-    message = update.edited_message if is_edit else update.message
-    admin_user: TgUser = message.from_user
-    is_not_allowed: bool = await is_banned(admin_user.id)
-    if is_not_allowed:
-        await message.reply_text(
-            "You are banned from using this bot", parse_mode=ParseMode.HTML
-        )
-        return None
-
-    suffix = datetime.today().strftime("%Y-%m-%d") + "_" + str(datetime.now().timestamp()).split(".")[0]
-
-    status = [STATUS_ACTIVE, STATUS_INACTIVE]
-    generated_files = []
-    batch_size = 300
-    for _status in status:
-        volume = 0
-        n: int = await subscriber_service.get_count(_status)
-        for i in range(0, n, batch_size):
-            subscribers = await subscriber_service.get_all(
-                _status, None, skip=i, limit=batch_size
-            )
-            output_file_path = f"/data/subscribers_{suffix}_{_status}_volume{str(volume)}.txt"
-            generated_files.append(output_file_path)
-            with open(output_file_path, "w") as f:
-                for subscriber in subscribers:
-                    f.write(f"{subscriber}\n")
-
-            await message.reply_document(
-                output_file_path, caption="subscribers", allow_sending_without_reply=True,
-                filename=output_file_path, write_timeout=120, read_timeout=120
-            )
-            volume += 1
-    if len(generated_files) > 0:
-        for file in generated_files:
-            os.remove(file)
-    else:
-        await message.reply_text(
-            "No subscribers found.", parse_mode=ParseMode.HTML
-        )
-
-
-async def set_upload_subscriber_handler(update: Update, context: CallbackContext):
-    """
-    Set the bot to accept subscriber loading.
-
-    Processes:
-        - Try to switch the bot mode to load subscribers
-
-    Response:
-        - If success, invite user to upload subscribers list in .txt file.
-        - If failed, prompt user to try again later.
-    """
-    is_edit = context.user_data['is_edit']
-    message = update.edited_message if is_edit else update.message
-    admin_user: TgUser = message.from_user
-    is_not_allowed: bool = await is_banned(admin_user.id)
-    if is_not_allowed:
-        await message.reply_text(
-            "You are banned from using this bot", parse_mode=ParseMode.HTML
-        )
-        return None
-
-    ready: bool = await admin_service.try_switch_mode(admin_user.id, MODE_LOAD_SUB, MODE_DEFAULT)
-    output_message: str = "Occupied, please try again later"
-    if ready:
-        output_message = "Ready to upload subscribers. Please provide the .txt file."
-    await message.reply_text(output_message, parse_mode=ParseMode.HTML)
-
-
-async def upload_subscriber(update: Update, context: CallbackContext):
-    is_edit = context.user_data['is_edit']
-    message = update.edited_message if is_edit else update.message
-    admin_user: TgUser = message.from_user
-    is_not_allowed: bool = await is_banned(admin_user.id)
-    if is_not_allowed:
-        await message.reply_text(
-            "You are banned from using this bot", parse_mode=ParseMode.HTML
-        )
-        return None
-
-    export_path = ""
-    document: Optional[Document] = getattr(message, "document", None)
-    filename: Optional[str] = getattr(document, "file_name", None)
-    mimetype: Optional[str] = getattr(document, "mime_type", None)
-    line = "default value"
-    try:
-        val_code, val_msg = val.addText_validation_fn(filename, document, mimetype)
-        if val_code != 0:
-            await message.reply_text(val_msg, parse_mode=ParseMode.HTML)
-            raise Exception(val_msg)
-
-        export_path = f"/online/{filename}"
-        stored = await store_to_drive(context, document.file_id, export_path)
-        if not stored:
-            raise Exception(f"({document.file_id, export_path}) => File download failed.")
-        n_load, n_skip = 0, 0
-        with open(export_path, "r", encoding="utf-8") as file:
-            while True:
-                line = file.readline()
-                if not line:  # EOF
-                    break
-                line = line.strip()
-                if len(line) == 0:  # EOF
-                    break
-                line = line.replace("'", "\"")
-                if '"None"' not in line:
-                    line = line.replace('None', '"None"')
-                sub_json: dict = json.loads(line)
-                telegram_id: int | None = sub_json.get("telegram_id")
-                if telegram_id is None:
-                    raise KeyError("telegram_id is None")
-                is_exist = await subscriber_service.exists(telegram_id)
-                if is_exist:
-                    n_skip += 1
-                    await subscriber_service.set_attribute(
-                        telegram_id, username=sub_json.get("username", "User Name"),
-                        chat_id=sub_json.get("chat_id"), mode=sub_json.get("mode"),
-                        status=sub_json.get("status"), blessed=sub_json.get("blessed"),
-                        n_feedback=sub_json.get("n_feedback"), feedback=sub_json.get("feedback"),
-                        reg_datetime=sub_json.get("reg_datetime")
-                    )
-                else:
-                    subscriber = service.subscriber_service.SubscriberService.create_subscriber(sub_json)
-                    await subscriber_service.add(subscriber)
-                    n_load += 1
-                await subscriber_service.update_non_standard_columns(sub_json)
-        os.remove(export_path)
-        output_message = f"Loaded: {n_load}\nSkipped: {n_skip}"
-        await message.reply_text(output_message, parse_mode=ParseMode.HTML)
-        return None
-    except TelegramError as tg_err:
-        logger.error(f"[/load_subscriber]=TelegramError:{str(tg_err)}")
-        await message.reply_text(
-            f"[/load_subscriber]=TelegramError:{str(tg_err)}\n{line}",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logger.error(f"[/load_subscriber]=Exception:{str(e)}\n{line}")
-        await message.reply_text(
-            f"[/load_subscriber]=Exception:{str(e)}\n{line}",
-            parse_mode=ParseMode.HTML
-        )
-    if export_path != "":
-        os.remove(export_path)
-
-
-async def wapi(update: Update, context: CallbackContext) -> None:
-    is_edit = context.user_data['is_edit']
-    message = update.edited_message if is_edit else update.message
-    admin_user: TgUser = message.from_user
-    is_not_allowed: bool = await is_banned(admin_user.id)
-    if is_not_allowed:
-        await message.reply_text(
-            "You are banned from using this bot", parse_mode=ParseMode.HTML
-        )
-        return None
-
-    query_string = f"unitGroup=metric&key={config.weather_api_key}&contentType=json"
-    url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/penang?{query_string}"
-    payload = {}
-    headers = {}
-    response = requests.request("GET", url, headers=headers, data=payload)
-    result = json.loads(response.text)
-
-    today = result["days"][0]
-
-    # determine the number of seconds required to shift the time
-    tdelta = timedelta(seconds=result["tzoffset"] * 3600)
-    tz = timezone(offset=tdelta)  # timezone object
-    current_time = datetime.now(tz).strftime("%H:%M:%S")  # shift by timezone offset
-
-    # determine the weather of next hour
-    capture = None
-    for session in today["hours"]:
-        if session["datetime"] > current_time:
-            capture = session
-            # print(f"Captured at {session['datetime']}")
-            break
-
-    if capture is None:
-        capture = result["days"][1]["hours"][0]
-
-    txt = """
-Datetime: {today} {datetime}
-Location: {location}
-Temperature: {temperature}
-Feels like: {feels_like}
-Condition: {condition}.
-"""
-    txt = txt.format(
-        today=today['datetime'], datetime=capture['datetime'], location=result['address'],
-        temperature=capture['temp'], feels_like=capture['feelslike'], condition=capture['conditions']
-    )
-    await message.reply_text(txt, parse_mode=ParseMode.HTML)
-
-
-async def empty_log(update: Update, context: CallbackContext) -> None:
-    """
-    Empties the log folder by removing all files in it.
-
-    Args:
-        update (Update): The update object containing information about the incoming update.
-        context (CallbackContext): The callback context object.
-
-    Returns:
-        None
-
-    Notes:
-        - Skip *.log files because those are the global logger.
-    """
-    is_edit = context.user_data['is_edit']
-    message = update.edited_message if is_edit else update.message
-    admin_user: TgUser = message.from_user
-    is_not_allowed: bool = await is_banned(admin_user.id)
-    if is_not_allowed:
-        await message.reply_text(
-            "You are banned from using this bot", parse_mode=ParseMode.HTML
-        )
-        return None
-    log_folder = "/error"
-    log_paths = os.listdir(log_folder)
-    log_paths = list(filter(lambda x: re.search(r".log$", x) is None, log_paths))
-    log_paths = list(map(lambda x: os.path.join(log_folder, x), log_paths))
-    deleted_count, total_count = 0, len(log_paths)
-    for log_path in log_paths:
-        try:
-            os.remove(log_path)
-            deleted_count += 1
-        except Exception as e:
-            logger.error(f"[/empty_log]=Exception:{str(e)}")
-    output_message = f"Removed: {deleted_count} of {total_count} files."
-    await message.reply_text(output_message, parse_mode=ParseMode.HTML)
-
-
-async def empty_data(update: Update, context: CallbackContext) -> None:
-    """
-    Empties the data folder by removing all files in it.
-
-    Args:
-        update (Update): The update object containing information about the incoming message.
-        context (CallbackContext): The context object for handling callbacks.
-
-    Returns:
-        None
-    """
-    is_edit = context.user_data['is_edit']
-    message = update.edited_message if is_edit else update.message
-    admin_user: TgUser = message.from_user
-    is_not_allowed: bool = await is_banned(admin_user.id)
-    if is_not_allowed:
-        await message.reply_text(
-            "You are banned from using this bot", parse_mode=ParseMode.HTML
-        )
-        return None
-
-    data_folder = "/data"
-    data_paths = os.listdir(data_folder)
-    for dpath in data_paths:
-        target_path = os.path.join(data_folder, dpath)
-        os.remove(target_path)
-
-    txt = f"Removed: {len(data_paths)} files"
-    await message.reply_text(txt, parse_mode=ParseMode.HTML)
-
-
-def attack_function(sequence_id: int, target_id: int, seconds: int):
-    """
-    Sleep for seconds and send a message to the target_id
-
-    @warning: this function should only be called by `attack(update, context)`!!!
-    """
-    if seconds > 0:
-        time.sleep(seconds)
-
-    master: telegram.Bot = telegram.Bot(token=config.master)
-    return asyncio.run(
-        master.send_message(target_id, f"Attack: {sequence_id}")
-    )
-
-
-async def attack(update: Update, context: CallbackContext):
-    """
-    Attempt to flood the target with 250 messages to test against the rate limiting set by Telegram.
-    4 processes are used and the process is expected to sleep for 0.1 seconds between each message.
-    targets are hard-coded as 76374999 and 75316412.
-    """
-    is_edit = context.user_data['is_edit']
-    message = update.edited_message if is_edit else update.message
-    admin_user: TgUser = message.from_user
-    is_not_allowed: bool = await is_banned(admin_user.id)
-    if is_not_allowed:
-        await message.reply_text(
-            "You are banned from using this bot", parse_mode=ParseMode.HTML
-        )
-        return None
-
-    cycles = 250
-    seconds = 0.1
-    targets = [76374999, 75316412, 6945572178]
-    try:
-        with Pool(processes=os.cpu_count()) as pool:
-            for i in range(cycles):
-                for target in targets:
-                    _ = pool.apply_async(
-                        attack_function,
-                        args=(i, target, seconds),
-                        callback=lambda ret: None,
-                        error_callback=lambda err: logger.error(f"[/attack]=Exception:{str(err)}")
-                    )
-            pool.close()
-            pool.join()
-        await message.reply_text(f"Sent to {targets}", parse_mode=ParseMode.HTML)
-    except TelegramError as tg_err:
-        logger.error(f"[/attack]=TelegramError:{str(tg_err)}")
-    except Exception as e:
-        logger.error(f"[/attack]=Exception:{str(e)}")
-
-
 async def store_to_drive(context: CallbackContext, file_id: str, export_path: str):
     """
     Stores a file from Telegram to a specified drive location.
@@ -1206,9 +888,6 @@ async def attachment_handler(update: Update, context: CallbackContext):
                 return None
             await handle_file_upload(update, context, dtype)
             await admin_service.set_attribute(admin_user.id, mode=MODE_DEFAULT, dtype="")
-        elif mode == MODE_LOAD_SUB:
-            await upload_subscriber(update, context)
-            await admin_service.set_attribute(admin_user.id, mode=MODE_DEFAULT)
         else:
             await message.reply_text("Invalid mode", parse_mode=ParseMode.HTML)
     except Exception as err:
@@ -1321,7 +1000,7 @@ async def clearTaskLog(update: Update, context: CallbackContext) -> None:
             task_name = task_name.split("?")[0]
     else:
         if fs.isLocalFile(task_name, "/online"):
-            task_name = f"{config.base_url}/{config.project_name}/{task_name}"
+            task_name = f"/online/{task_name}"
         else:
             await message.reply_text("FAILED. File not found.", parse_mode=ParseMode.HTML)
             return None
@@ -1672,7 +1351,7 @@ async def who_has_this_file(update: Update, context: CallbackContext):
         if "?" in prompt:
             test_case.append(prompt.split("?")[0])
     else:
-        test_case.append(f"{config.base_url}/{config.project_name}/{prompt}")  # photo, document, video
+        test_case.append(f"/online/{prompt}")  # photo, document, video
 
     def pick(inp_dict, columns) -> dict:
         return {k: v for k, v in inp_dict.items() if k in columns}
