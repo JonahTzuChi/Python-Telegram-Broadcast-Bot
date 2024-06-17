@@ -1,6 +1,3 @@
-from PIL import Image
-
-
 def is_valid_folderName(folder_name: str) -> bool:
     if len(folder_name) == 0 or len(folder_name) > 32:
         return False
@@ -58,25 +55,6 @@ def addPhoto_validation_fn(filename, photo):
     if photo is None:
         return 3, "Please try again. Only accept photo."
     return 0, "None"
-
-
-def is_correct_resolution(photo_path: str, expected_shape: tuple) -> bool:
-    """
-    Checks if a photo matches the expected resolution.
-
-    This function opens an image file from the specified path and compares its size (resolution)
-    to the expected dimensions provided as a tuple. It is primarily used to validate if an image
-    meets specific resolution criteria before proceeding with further processing or operations.
-
-    Parameters:
-    - photo_path (str): The file path to the photo that needs to be checked.
-    - expected_shape (tuple): A tuple specifying the expected dimensions (width, height) of the photo.
-
-    Returns:
-    - bool: True if the photo's resolution matches the expected dimensions, False otherwise.
-    """
-    with Image.open(photo_path) as photo:
-        return photo.size == expected_shape
 
 
 def addDocument_validation_fn(filename, document, mimetype: str) -> tuple[int, str]:
