@@ -1,6 +1,5 @@
 # external library
 import hashlib as hx
-import charade
 from telegram import Message
 # internal library
 import config
