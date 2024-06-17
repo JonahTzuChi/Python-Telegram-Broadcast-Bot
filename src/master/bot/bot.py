@@ -30,7 +30,6 @@ def run_bot(bot: telegram.ext.Application) -> None:
     bot.add_handler(CommandHandler("unsubscribe", tu.unsubscribe_handler), group=1)
     bot.add_handler(CommandHandler("help", tu.help_handler), group=1)
     bot.add_handler(CommandHandler("follow", tu.get_follow_information_handler), group=1)
-    bot.add_handler(CommandHandler("donate", tu.get_donation_information_handler), group=1)
     bot.add_handler(CommandHandler("feedback", tu.start_feedback_handler), group=1)
     bot.add_handler(CommandHandler("rename", tu.rename_handler), group=1)
     bot.add_handler(MessageHandler(filters.TEXT, tu.message_handler), group=1)
