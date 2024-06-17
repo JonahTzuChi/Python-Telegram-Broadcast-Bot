@@ -11,19 +11,12 @@ with open(shared_config_dir / "general.production.yml", 'r') as f:
 # Extracting `general_config_yaml`
 seconds: float = general_config_yaml["SLEEP_SECONDS"]
 max_retry: int = general_config_yaml["MAX_RETRY"]
-# use_multi_process: bool = general_config_yaml["USE_MULTI_PROCESS"]
-# use_nproc: int = general_config_yaml["USE_NPROC"]
-# broadcast_types: list[str] = general_config_yaml["BROADCAST_TYPES"]
-# upload_types: list[str] = general_config_yaml["UPLOAD_TYPES"]
 
 magic_postfix = general_config_yaml["MAGIC_POSTFIX"]
-# db_find_limit: int = general_config_yaml["DB_FIND_LIMIT"]
 
 # Load access control list
 with open(shared_config_dir / "access.production.yml", 'r') as f:
     acl_config_yaml = yaml.safe_load(f)
-# sysadmin_tid: list[int] = acl_config_yaml["SYSADMIN_TID"]
-# dummy_id: int = acl_config_yaml["DUMMY_ID"]
 token: str = acl_config_yaml["MASTER_TOKEN"]
 
 # Load environmental variables
