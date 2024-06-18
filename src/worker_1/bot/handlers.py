@@ -12,7 +12,6 @@ from multiprocessing.pool import Pool, ApplyResult
 from typing import Any, Optional, Tuple
 from queue import Queue
 
-import requests
 import telegram
 from telegram import (
     Update,
