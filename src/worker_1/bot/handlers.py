@@ -89,7 +89,7 @@ available_commands = [
     ("/upload", "Upload file to backend"),
     ("/release", "Quit broadcast mode"),
     ("/help", "Help"),
-    ("/count_subscribers", "Get No. Active Subscribers"),
+    ("/metrics", "Get No. Active Subscribers"),
     ("/export", "Export List of Subscribers"),
     ("/photo", "Get photo list"),
     ("/video", "Get video list"),

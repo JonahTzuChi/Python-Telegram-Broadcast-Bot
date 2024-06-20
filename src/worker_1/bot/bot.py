@@ -37,7 +37,7 @@ def run_bot(bot: telegram.ext.Application, ) -> None:
     bot.add_handler(CommandHandler("upload", handlers.add_file_type_handle), group=1)
     bot.add_handler(CommandHandler("release", handlers.release_handler), group=1)
     bot.add_handler(CommandHandler("help", handlers.help_handler), group=1)
-    bot.add_handler(CommandHandler("count_subscribers", handlers.query_nos_button), group=1)
+    bot.add_handler(CommandHandler("metrics", handlers.query_nos_button), group=1)
     bot.add_handler(CommandHandler("terminate", handlers.terminate_handler), group=1)
     bot.add_handler(CommandHandler("export", handlers.export_subscribers_button), group=1)
 
